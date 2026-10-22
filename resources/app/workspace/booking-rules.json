@@ -1,0 +1,34 @@
+{
+  "timezone": "Asia/Shanghai",
+  "equipmentName": "19号楼404-4超净工作台",
+  "equipmentModel": "HCB-900V",
+  "equipmentId": 37,
+  "slotMinutes": 30,
+  "remark": "cell",
+  "calendarWeek": { "startsOn": "Sunday", "endsOn": "Saturday", "navigation": "日期旁左右箭头" },
+  "maxMinutesPerAccountPerDay": 120,
+  "dailyLimitMode": "soft-planning-reference",
+  "dailyLimitClarification": "每日2小时为计划参考，网站无硬限制；定时模式每窗口一个账号，每账号每日一个窗口，共4次半小时，不跨窗口自动更换使用者",
+  "dailyWindows": [
+    ["08:30", "10:30"],
+    ["11:00", "13:00"],
+    ["13:30", "15:30"],
+    ["16:00", "18:00"],
+    ["18:30", "20:30"]
+  ],
+  "release": {
+    "advanceDays": 7,
+    "reference": "slotEnd",
+    "basis": "用户示例：10-21 08:30 开放 10-28 08:00–08:30；待结合页面规则核验"
+  },
+  "currentRequest": {
+    "date": "2026-10-28",
+    "start": "01:30",
+    "end": "02:00",
+    "outsideDailyWindowsAuthorized": true,
+    "interpretation": "用户明确更正：本次测试为凌晨 01:30–02:00；仅本次测试允许日常窗口外时段"
+  },
+  "accountSwitching": true,
+  "automaticScheduling": true,
+  "scheduleControl": { "stateFile": "../work/manager/manager-state.json", "defaultPaused": true }
+}

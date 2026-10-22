@@ -1,0 +1,17 @@
+{
+  "repository": "MREASENTO/CellStation",
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA61YSosVVWQbGQ3AbHxWNv7rmnyowu7Uy663ZcskZ7yw=\n-----END PUBLIC KEY-----\n",
+  "feeds": [
+    "https://cnb.cool/mreasento/CellStation/-/git/raw/main/update/latest.json",
+    "https://ghfast.top/https://raw.githubusercontent.com/MREASENTO/CellStation/main/update/latest.json",
+    "https://raw.githubusercontent.com/MREASENTO/CellStation/main/update/latest.json"
+  ],
+  "downloadPrefixes": [
+    "https://ghfast.top/",
+    ""
+  ],
+  "gitRepositories": [
+    "https://cnb.cool/mreasento/CellStation",
+    "https://github.com/MREASENTO/CellStation"
+  ]
+}

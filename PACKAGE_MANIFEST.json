@@ -1,0 +1,40 @@
+{
+  "product": "CellStation",
+  "version": "1.0.2",
+  "platform": "win32-x64",
+  "runtimeId": "c90e386c9bc2a98746c9be7adcfc44fa2a19e3065badad4da606522f760c17ca",
+  "accountDataIncluded": false,
+  "schedulerDefault": "paused",
+  "requirements": [
+    "Windows 64-bit",
+    "Google Chrome",
+    "network"
+  ],
+  "sha256": {
+    "CellStation.exe": "376fa4df2e22f6bac65ae8c8488e98d4003c187a06af13f1fb444043f1e586ee",
+    "resources/app/workspace/git-updates.cjs": "b6acb2988fb4de3bd4c2d468f3a1f382126f9241aa55c6e57adc772663a19572",
+    "resources/app/workspace/wechat-notifications.cjs": "e13d7b914d84d1989b58d67ea7e6e720a15d0a2262e294cfbb2a9f2359b211b4",
+    "resources/app/workspace/app-updater.cjs": "d5674ad01cc4c222e10216334b7b4a93562eb1a4a2ba4086c18a4c1c5c504410",
+    "resources/app/workspace/desktop-updates.cjs": "b2141f8fc86e82f158ea8dcd14fcdf7e2711478c2bfd6289d9c737ec2635c5fb",
+    "resources/app/workspace/update-helper.py": "d5800379d3bcbf17cbf390678d5e01a246059c2bb56b7cb01fe99a17bd0b176f",
+    "resources/app/workspace/release-config.json": "6e24d9eb1bc5aed0af20b24ae817276f07f495c1e4bff293438e386df60fb02d",
+    "resources/app/workspace/manager-ui/settings-v100.js": "7500ec886801dad4d5b4e2e9eeaaca5fdd034cf14325248cd6866199975ba0b0",
+    "resources/app/workspace/manager-ui/index.html": "8580f95b9efbe33edc503957b9db3b7c50e183a61fa9196ccf89f8e6305b4e66",
+    "resources/app/workspace/browser-worker.cjs": "7f1588f6d169ab81e27fc2f8a95acc0df798af72260295d69da1f5d140bc070d",
+    "resources/app/workspace/desktop-integration.cjs": "963cb5b0726c49e28ae1d69da82149e03f19509af3f244e9020b40589f468c51",
+    "resources/app/desktop-main.cjs": "ad03cec33a5a3cac2f40fb7e2be7aa8526624e7ac8c62d3ef17c0b888bf365eb",
+    "resources/app/workspace/operations.cjs": "d4ca97055983e7fe38f2b9fa3c33a9bf29a17938fbfbfec49f1bb0b2682e3e4f",
+    "resources/app/workspace/retention.cjs": "cbf9af9ae832c854c3785b0cdc007c9089baeed59fcc7bcf695f9ae25c8517d0",
+    "resources/app/workspace/retention_files.py": "d94e07341bd17bf5e3c6e4784232d8af2ad71eacbeed414536bd09711544e7b6",
+    "resources/app/workspace/archive-support.py": "e05fc2b87b45126b185aa8355f0d9efbc34c66ec3d6c5112b544140dfe3900d7",
+    "resources/app/workspace/manager-store.cjs": "3ed22ee2902862bac9b763f1575acab2a3947aaa6ec1817f80bd299f8128d45d",
+    "resources/app/workspace/schedule-logic.cjs": "9626a5010b0042a8acc001d92c4e0b7c65e874b7bdfefd2df03066d84062e7f1",
+    "resources/app/workspace/manager-server.cjs": "fea7e3136675cd5a785a2ad9c01b950b96b0a0de611659b8907f2ff6f7cbd7f9",
+    "resources/app/workspace/scheduler.cjs": "5aad73a169e0efe50d21e2b0bdee6838fd41c503be8bb8a59bc220d4abf5a57e",
+    "resources/app/workspace/reservation.cjs": "491bb270fbd9acb941bc263bd6aa9738d29185e8454f69895a2aa9ffff3d0514",
+    "resources/app/workspace/equipment.cjs": "6c60550892d7b615e36345211f07341272ec4580d51857bdb3bd4bf0606d2083",
+    "resources/app/workspace/timeline.cjs": "d4ad09752c3469c34ff4673ff18e3c667e1ebbc535e278cc2128ccafec1e2aec",
+    "resources/app/workspace/manager-ui/app.js": "73b47a0f6ed4be71d09e9d2ba905bd03a24f0f56d94972a036da41e23d731409",
+    "resources/app/workspace/manager-ui/style.css": "90750edefc6478a3cd29816fe4ae25cc45ffd170c0e2a0cda6add9f51ae568dd"
+  }
+}

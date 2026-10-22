@@ -1,0 +1,4 @@
+Electron: https://www.electronjs.org/ (MIT; Chromium notices supplied by Electron)
+Python 3.13.12: https://www.python.org/downloads/release/python-31312/ (LICENSE.txt in runtime/python)
+Playwright: https://github.com/microsoft/playwright (Apache-2.0; package LICENSE files included)
+ddddocr: https://github.com/sml2h3/ddddocr (MIT; dependency metadata/license files included)
