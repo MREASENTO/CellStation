@@ -2,7 +2,12 @@
 from pathlib import Path, PurePosixPath
 import os,sys,json,time,hashlib,zipfile,shutil,subprocess,stat,ctypes
 
+def long_path(value):
+    text=str(value)
+    return '\\\\?\\'+text if os.name=='nt' and not text.startswith('\\\\?\\') else text
+
 def no_links(directory):
+    directory=Path(long_path(directory))
     if directory.is_symlink() or (hasattr(directory,'is_junction') and directory.is_junction()):raise ValueError('Linked update path rejected')
     for p in directory.rglob('*'):
         if p.is_symlink() or (hasattr(p,'is_junction') and p.is_junction()):raise ValueError('Linked child rejected')
@@ -48,7 +53,7 @@ def apply_update(transaction):
     stage=tx.parent/'staged';backup=tx.parent/'rollback'
     if stage.exists() or backup.exists():raise ValueError('Update transaction already used')
     stage.mkdir();backup.mkdir()
-    with zipfile.ZipFile(archive) as z:z.extractall(stage)
+    with zipfile.ZipFile(archive) as z:z.extractall(long_path(stage))
     app=stage/'CellStation-win32-x64';old=[];new=[]
     data_backup=tx.parent/'data-state';data_backup.mkdir()
     data_files=[]
@@ -61,7 +66,9 @@ def apply_update(transaction):
         env=os.environ.copy();env['CELLSTATION_UPDATE_NONCE']=params['nonce'] if updated else ''
         env.pop('ELECTRON_RUN_AS_NODE',None)
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
-        return subprocess.Popen([str(install/'CellStation.exe'),'--updated' if updated else '--skip-update-once'],cwd=install,env=env,creationflags=flags,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        arguments=[str(install/'CellStation.exe'),'--updated' if updated else '--skip-update-once']
+        if params.get('background'):arguments.append('--autostart')
+        return subprocess.Popen(arguments,cwd=install,env=env,creationflags=flags,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     child=None
     try:
         for item in app.iterdir():
@@ -74,7 +81,7 @@ def apply_update(transaction):
             if health.exists():
                 result=json.loads(health.read_text(encoding='utf-8-sig'))
                 if result.get('nonce')==params['nonce'] and result.get('version')==params['version']:
-                    shutil.rmtree(backup);shutil.rmtree(stage);shutil.rmtree(data_backup);archive.unlink(missing_ok=True)
+                    shutil.rmtree(long_path(backup));shutil.rmtree(long_path(stage));shutil.rmtree(long_path(data_backup));archive.unlink(missing_ok=True)
                     log.write_text(json.dumps({'status':'success','version':params['version'],'at':time.time()}),encoding='utf-8');return
             if child.poll() is not None:raise RuntimeError('Updated application exited before healthy startup')
             time.sleep(.5)
@@ -83,7 +90,7 @@ def apply_update(transaction):
         if child and child.poll() is None:child.terminate();child.wait(timeout=20)
         for name in reversed(new):
             target=install/name
-            if target.is_dir():shutil.rmtree(target)
+            if target.is_dir():shutil.rmtree(long_path(target))
             elif target.exists():target.unlink()
         for name in reversed(old):shutil.move(str(backup/name),str(install/name))
         for relative in data_files:shutil.copy2(data_backup/relative,data/relative)
@@ -91,4 +98,6 @@ def apply_update(transaction):
         launch(False)
         raise
 
-if __name__=='__main__':apply_update(sys.argv[1])
+if __name__=='__main__':
+    if sys.argv[1]=='--validate':validate_archive(sys.argv[2],sys.argv[3])
+    else:apply_update(sys.argv[1])

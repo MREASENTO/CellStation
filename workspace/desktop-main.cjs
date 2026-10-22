@@ -62,7 +62,7 @@ else {
     startupWindow = new BrowserWindow({ width: 520, height: 355, resizable: false, title: 'CellStation 启动检查', show: !autoStarted, backgroundColor: '#f6f8f3', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
     await startupWindow.loadFile(path.join(__dirname, 'workspace/startup.html'));
     const startupProgress = value => { if(startupWindow && !startupWindow.isDestroyed()) startupWindow.webContents.executeJavaScript('window.startupProgress?.('+JSON.stringify(value)+')').catch(()=>{}); };
-    updates = new (require('./workspace/desktop-updates.cjs').DesktopUpdates)({ app, dataRoot, getManager: () => manager, quit, progress: value => startupProgress({message:value.message,percent:value.status==='downloading'?Math.round(70+(value.progress||0)*.25):75}) });
+    updates = new (require('./workspace/desktop-updates.cjs').DesktopUpdates)({ app, dataRoot, getManager: () => manager, quit, isBackground: () => autoStarted || Boolean(mainWindow && !mainWindow.isVisible()), progress: value => startupProgress({message:value.message,percent:value.status==='downloading'?Math.round(70+(value.progress||0)*.25):75}) });
     desktop = new DesktopIntegration({ app, dataRoot, show, chooseBackupPath: async defaultPath => {
       const result = await dialog.showSaveDialog(mainWindow, { title: '导出 CellStation 配置备份', defaultPath, filters: [{ name: 'CellStation 配置备份（含加密密码）', extensions: ['json'] }] });
       return result.canceled ? null : result.filePath;
@@ -117,3 +117,4 @@ else {
     }
   }).catch(error => { console.error('DESKTOP_START_ERROR', error.message); dialog.showErrorBox('CellStation启动失败', error.message); quitting = true; app.exit(1); });
 }
+

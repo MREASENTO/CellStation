@@ -2,9 +2,9 @@
   "release": {
     "version": "1.0.0",
     "url": "https://github.com/MREASENTO/CellStation/releases/download/v1.0.0/CellStation-v1.0.0-win64.zip",
-    "sha256": "92a39c57f182954926166cd432dbbd33069cf8d2ce2d32c2ac982d70f4b895f9",
-    "size": 331272520,
-    "publishedAt": "2026-10-22T11:59:27.347Z"
+    "sha256": "1a77d4555ffdf1dea30f21e98e77b4aa0ab65d57acc4deb2c99998cf67e456e2",
+    "size": 331272776,
+    "publishedAt": "2026-10-22T12:11:13.293Z"
   },
-  "signature": "euzNkXy76yqpTFNJb93GOArffV8l5DCaKb8LDk24vrzH/u+f0TVXK3lleekyWhtT/BZmNiCewyN86jVR3A6tBg=="
+  "signature": "Y9G1hMovlmHgx9pjYWz/CGbiTrCCeD/bsD6kmelEnE5tbdfC/LKVH9zZ4Wl2cyy0Syj9/STu4FWtKwLCyKCyCg=="
 }

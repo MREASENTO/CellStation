@@ -30,7 +30,9 @@ jobs:
           NEW_VERSION: ${{ inputs.version }}
         run: |
           python scripts/bump-version.py $env:NEW_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix workspace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/bootstrap-build.py
       - name: Validate logic and updater rollback
         working-directory: workspace
@@ -45,8 +47,11 @@ jobs:
           NEW_VERSION: ${{ inputs.version }}
         run: |
           workspace/.venv/Scripts/python.exe workspace/build-desktop.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node workspace/build-desktop.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python workspace/package-desktop.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node workspace/sign-release.cjs "outputs/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json
       - name: Commit release source and publish assets
         env:
@@ -64,3 +69,4 @@ jobs:
           git add update/latest.json
           git commit -m "Publish signed update feed for v$env:NEW_VERSION"
           git push origin HEAD:main
+
