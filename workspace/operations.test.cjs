@@ -124,7 +124,7 @@ test('failure diagnostics mask inputs, strip query secrets and ZIP excludes cred
 });
 test('manual pause while automatic preflight is pending cancels the subsequent start', async () => {
   const f = fixture(); let release; const gate = new Promise(resolve => { release = resolve; }); let probeStarted = false;
-  f.worker.probeEnvironment = async () => { probeStarted = true; await gate; return { chrome: true, website: true }; };
+  f.options.localCheck = async id => { if(id === 'runtime') { probeStarted = true; await gate; } return {detail:'mock local check'}; };
   const manager = await createManager({ directory: path.join(f.root, 'http'), operationsRoot: f.root, port: 0, runScheduler: false, clock: f.clock, vault, localCheck: f.options.localCheck, workerFactory: () => f.worker });
   manager.store.data.accounts = f.store.data.accounts; manager.store.data.config = f.store.data.config;
   try {

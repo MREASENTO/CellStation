@@ -43,12 +43,12 @@ class Operations {
     this.checkPromise = this.runCheck(options).finally(() => { this.checkPromise = null; });
     return this.state.health;
   }
-  async item(id, title, action) {
+  async item(id, title, action, blocking = true) {
     if (this.cancelled) throw new Error('自检已取消');
     const item = { id, title, status: 'running', detail: '检查中' }; this.state.health.items.push(item); this.persist();
     this.onProgress(this.state.health);
     try { const result = await action(); Object.assign(item, { status: 'pass', ...result }); }
-    catch (error) { Object.assign(item, { status: 'fail', detail: safeError(error), diagnosticId: error.diagnosticId }); }
+    catch (error) { Object.assign(item, { status: blocking ? 'fail' : 'warn', detail: safeError(error), diagnosticId: error.diagnosticId }); }
     this.persist(); this.onProgress(this.state.health); return item;
   }
   async checkLocal() {
@@ -86,35 +86,41 @@ class Operations {
         const probe = await this.worker.probeEnvironment();
         if (!probe.chrome || !probe.website) throw new Error(probe.detail || 'Chrome或预约网站不可用');
         return { detail: probe.detail };
-      });
+      }, false);
       const ids = this.store.accounts().filter(a => a.enabled).map(a => a.id);
       if (!ids.length) await this.item('accounts', '启用窗口与账号', async () => ({ status: 'warn', detail: '尚未启用账号；请先启用至少一个账号' }));
       for (const id of ids) {
         const account = this.store.accounts().find(a => a.id === id);
         await this.item(`account-${id}`, `账号登录 · ${account?.owner || account?.username || '未配置'}`, async () => {
           if (!account?.enabled || !account.hasPassword) throw new Error('账号未启用或需要补录密码');
-          if (!accounts) return { status: 'warn', detail: '本次未检查账号登录，启动前需要完整自检' };
-          if (browser.status !== 'pass') return { status: 'fail', detail: '网站不可访问，未发送账号登录请求' };
+          if (!accounts) return { status: 'warn', detail: '本次未检查登录；实际预约任务准备时登录' };
+          if (browser.status !== 'pass') return { status: 'warn', detail: '网站不可访问，未发送登录请求；不影响启动等待，实际任务会重新登录' };
           const result = await this.worker.testLogin(id); if (!result.success) throw new Error(result.message || '登录检查未通过');
           return { detail: result.message || '验证码自动识别和登录通过；未操作预约' };
-        });
+        }, false);
       }
-      if (ids.length && browser.status === 'pass' && accounts && this.worker.validateEquipment) for (const equipment of require('./equipment.cjs').equipmentList(this.store.data.config)) await this.item('equipment-'+equipment.equipmentId, '目标设备 · '+equipment.equipmentName, async () => { const target = await this.worker.validateEquipment(equipment); return { detail: `${target.equipmentName} · 编号${target.equipmentId} · 日历${target.calendarId}` }; });
-      await this.item('window-selection', '预约窗口与账号数量', async () => { validateSchedules(this.store.data.config, this.store.data.accounts, this.clock()); return { detail: `已选${this.store.data.config.windows.filter(w => w.enabled).length}个窗口，启用${ids.length}个账号；每天随机分配` }; });
-      check.canStart = accounts && ids.length > 0 && check.items.every(item => item.status !== 'fail');
+      if (ids.length && browser.status === 'pass' && accounts && this.worker.validateEquipment) for (const equipment of require('./equipment.cjs').equipmentList(this.store.data.config)) await this.item('equipment-'+equipment.equipmentId, '目标设备 · '+equipment.equipmentName, async () => { const target = await this.worker.validateEquipment(equipment); return { detail: `${target.equipmentName} · 编号${target.equipmentId} · 日历${target.calendarId}` }; }, false);
+      await this.item('window-selection', '预约窗口与账号数量', async () => { this.validateReadiness(); return { detail: `已选${this.store.data.config.windows.filter(w => w.enabled).length}个窗口，启用${ids.length}个账号；每天随机分配` }; });
+      check.canStart = ids.length > 0 && check.items.every(item => item.status !== 'fail');
       check.status = check.items.some(item => item.status === 'fail') ? 'fail' : check.items.some(item => item.status === 'warn') ? 'warning' : 'pass';
       check.signature = initialSignature;
       if (initialSignature !== this.signature()) { check.canStart = false; check.status = 'warning'; check.message = '自检期间配置变化，请重新检查'; }
-      this.store.event('selfcheck', check.canStart ? '运行前检测通过：网站、启用账号与目标仪器' : '自检结束，请查看检查项目后再启动');
+      this.store.event('selfcheck', check.canStart ? '调度配置可用；网站与登录检测仅供参考，实际任务准备时重新检查' : '自检结束；请修复本地环境或预约配置后启动');
     } catch (error) { check.canStart = false; check.status = 'interrupted'; check.message = safeError(error); }
     finally { check.running = false; check.completedAt = this.clock(); this.persist(); }
     return check;
   }
+  validateReadiness() {
+    validateSchedules(this.store.data.config, this.store.data.accounts, this.clock());
+    if (this.store.accounts().some(a => a.enabled && !a.hasPassword)) throw new Error('启用账号需要补录密码');
+  }
   async ensureCheck() {
+    // Only local prerequisites and configuration gate scheduling. Remote checks are
+    // optional diagnostics; the actual task owns login, retries and notifications.
+    this.validateReadiness();
     if (this.recentCheck()) return;
-    if (!this.checkPromise) this.startCheck({ accounts: true });
-    const result = await this.checkPromise;
-    if (!result.canStart) throw new Error('运行前自检未通过，请查看“程序设置 → 自检与诊断”；预约仍暂停');
+    if (this.state.startup?.status !== 'pass') await this.checkLocal();
+    this.validateReadiness();
   }
   summary(date) {
     if (!validDate(date)) throw new Error('目标日期无效');

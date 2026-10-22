@@ -16,7 +16,7 @@ python workspace/package-desktop.py
 
 仓库已配置 `CELLSTATION_UPDATE_SIGNING_KEY` Actions Secret，签名公钥在workspace/release-config.json。私钥不进入源码和发布包。公钥必须长期稳定，不能随意重新生成，否则旧客户端无法验证更新。
 
-在GitHub Actions中选择“Build and publish release”，点击Run workflow，输入高于当前版本的版本号，例如1.0.1。工作流会修改版本标识、测试、构建公开无数据包、签名清单、上传Release，再更新main分支的update/latest.json。工作流不会上传本地账号或执行记录。
+在GitHub Actions中选择“Build and publish release”，点击Run workflow，输入高于当前版本的版本号，例如1.0.2。工作流会修改版本标识、测试、构建公开无数据包、签名清单、上传Release，再更新main分支的update/latest.json。工作流不会上传本地账号或执行记录。
 
 也可本地构建后用 `node workspace/sign-release.cjs 输出ZIP 清单JSON 私钥PEM` 签名，先发布对应Release资产，再更新update/latest.json。
 

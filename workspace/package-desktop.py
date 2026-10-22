@@ -4,13 +4,13 @@ import json
 import zipfile
 
 root = Path(__file__).resolve().parent.parent
-bundle = root / 'outputs' / 'release-v1.0.0' / 'CellStation-win32-x64'
-archive = root / 'outputs' / 'CellStation-v1.0.0-win64.zip'
+bundle = root / 'outputs' / 'release-v1.0.1' / 'CellStation-win32-x64'
+archive = root / 'outputs' / 'CellStation-v1.0.1-win64.zip'
 readme = (root / 'workspace' / 'v100-使用说明.txt').read_text(encoding='utf-8-sig')
 (bundle / 'README.txt').write_text(readme, encoding='utf-8-sig')
 files = [p for p in bundle.rglob('*') if p.is_file() and p.relative_to(bundle).parts[0] != 'data']
 manifest = {
-    'product': 'CellStation', 'version': '1.0.0', 'platform': 'win32-x64',
+    'product': 'CellStation', 'version': '1.0.1', 'platform': 'win32-x64',
     'accountDataIncluded': False, 'schedulerDefault': 'paused',
     'requirements': ['Windows 64-bit', 'Google Chrome', 'network'],
     'sha256': {name: hashlib.sha256((bundle / name).read_bytes()).hexdigest() for name in ['CellStation.exe', 'resources/app/workspace/wechat-notifications.cjs','resources/app/workspace/app-updater.cjs','resources/app/workspace/desktop-updates.cjs','resources/app/workspace/update-helper.py','resources/app/workspace/release-config.json','resources/app/workspace/manager-ui/settings-v100.js','resources/app/workspace/manager-ui/index.html','resources/app/workspace/browser-worker.cjs', 'resources/app/workspace/desktop-integration.cjs', 'resources/app/desktop-main.cjs', 'resources/app/workspace/operations.cjs', 'resources/app/workspace/retention.cjs', 'resources/app/workspace/retention_files.py', 'resources/app/workspace/archive-support.py', 'resources/app/workspace/manager-store.cjs', 'resources/app/workspace/schedule-logic.cjs', 'resources/app/workspace/manager-server.cjs', 'resources/app/workspace/scheduler.cjs', 'resources/app/workspace/reservation.cjs', 'resources/app/workspace/equipment.cjs', 'resources/app/workspace/timeline.cjs', 'resources/app/workspace/manager-ui/app.js', 'resources/app/workspace/manager-ui/style.css']},
