@@ -19,3 +19,13 @@ def write_app_manifest(bundle,version,runtime):
     m={'product':'CellStation','kind':'app','version':version,'runtimeId':runtime,'accountDataIncluded':False,'files':files}
     (bundle/'APP_UPDATE_MANIFEST.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     return m
+
+def app_payload_manifest(bundle):
+    """A reused launcher must not inherit the new full ZIP's EXE checksum."""
+    m=json.loads((bundle/'APP_UPDATE_MANIFEST.json').read_text(encoding='utf-8'))
+    package=json.loads((bundle/'PACKAGE_MANIFEST.json').read_text(encoding='utf-8'))
+    package['packageType']='app-update';package['runtimeReused']=True
+    package['sha256']={name:checksum for name,checksum in package.get('sha256',{}).items() if is_app(name)}
+    raw=(json.dumps(package,ensure_ascii=False,indent=2)+'\n').encode('utf-8')
+    m['files']['PACKAGE_MANIFEST.json']=hashlib.sha256(raw).hexdigest()
+    return (json.dumps(m,ensure_ascii=False,indent=2)+'\n').encode('utf-8'),{'PACKAGE_MANIFEST.json':raw}

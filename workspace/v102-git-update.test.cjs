@@ -10,6 +10,7 @@ async function fixture() {
   fs.mkdirSync(repository); fs.mkdirSync(dataRoot, { recursive: true });
   fs.mkdirSync(path.join(install, 'resources/app/runtime/git/cmd'), { recursive: true }); fs.writeFileSync(path.join(install, 'resources/app/runtime/git/cmd/git.exe'), 'mock bundled path');
   const runtime = 'a'.repeat(64), files = { 'resources/app/package.json': Buffer.from('{"version":"1.0.3"}'), 'PACKAGE_MANIFEST.json': Buffer.from(JSON.stringify({ version: '1.0.3', runtimeId: runtime, accountDataIncluded: false })) };
+  files['resources/app/stable.bin']=crypto.randomBytes(256*1024);
   const manifest = { product: 'CellStation', kind: 'app', version: '1.0.3', runtimeId: runtime, accountDataIncluded: false, files: Object.fromEntries(Object.entries(files).map(([name, bytes]) => [name, digest(bytes)])) };
   const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
   for (const [name, content] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(repository, name)), { recursive: true }); fs.writeFileSync(path.join(repository, name), content); }
@@ -40,6 +41,16 @@ test('real Git fetch pins the signed tag and commit, falls back from CNB, and re
   const runGit = (args, options) => { if (args.includes('fetch')) { if (args.includes('https://cnb.cool/mreasento/CellStation')) { cnbs++; throw new Error('mock CNB unavailable'); } origins++; } return f.runGit(args, options); };
   const artifact = await fetchGitUpdate({ ...f, runGit }); assert.equal(artifact.release.kind, 'app'); assert.equal(fs.readFileSync(artifact.file).subarray(0, 2).toString(), 'PK'); assert.equal(cnbs, 1); assert.equal(origins, 1);
   await fetchGitUpdate({ ...f, runGit }); assert.equal(origins, 2);
+  const repository=path.join(f.root,'repo'),cache=path.join(f.dataRoot,'updates/git-cache.git/objects');
+  const objectBytes=dir=>fs.readdirSync(dir,{withFileTypes:true}).reduce((n,e)=>n+(e.isDirectory()?objectBytes(path.join(dir,e.name)):fs.statSync(path.join(dir,e.name)).size),0);
+  const before=objectBytes(cache),manifest=JSON.parse(fs.readFileSync(path.join(repository,'APP_UPDATE_MANIFEST.json')));
+  for(const name of ['resources/app/package.json','PACKAGE_MANIFEST.json']){const file=path.join(repository,name),data=JSON.parse(fs.readFileSync(file));data.version='1.0.4';fs.writeFileSync(file,JSON.stringify(data));manifest.files[name]=digest(fs.readFileSync(file));}
+  manifest.version='1.0.4';const changed=Buffer.from(JSON.stringify(manifest,null,2)+'\n');fs.writeFileSync(path.join(repository,'APP_UPDATE_MANIFEST.json'),changed);
+  const git=async args=>execFile('git',['-c','safe.directory='+repository.replaceAll('\\','/'),'-C',repository,...args],{windowsHide:true});
+  await git(['add','.']);await git(['commit','-m','mock next application update']);await git(['tag','app-v1.0.4']);
+  const next={...f.release,version:'1.0.4',gitRef:'app-v1.0.4',gitRevision:(await git(['rev-parse','HEAD'])).stdout.trim(),gitManifestSha256:digest(changed)};
+  const updated=await fetchGitUpdate({...f,release:next,runGit:f.runGit});assert.equal(updated.release.version,'1.0.4');assert.ok(objectBytes(cache)-before<before/2,'unchanged large application asset must be reused between different versions');
+
   await assert.rejects(fetchGitUpdate({ ...f, runGit, release: { ...f.release, gitRevision: 'b'.repeat(40) } }), /不可用/);
 });
 test('updater selects Git application update without downloading the full package', async () => {

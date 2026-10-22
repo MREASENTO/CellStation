@@ -19,14 +19,16 @@ sys.path.insert(0,str(root/'workspace'))
 from importlib.util import spec_from_file_location,module_from_spec
 spec=spec_from_file_location('helper',root/'workspace/update-helper.py');module=module_from_spec(spec);spec.loader.exec_module(module)
 module.app_manifest(raw,version,manifest['runtimeId'])
+from app_package import app_payload_manifest
+raw,overrides=app_payload_manifest(bundle);manifest=json.loads(raw)
 for name in git('ls-files','-z').stdout.decode().split('\0'):
     if not name:continue
     target=repository/name
     assert target.resolve().is_relative_to(repository.resolve()) and not target.is_symlink()
     if target.is_file():target.unlink()
 for name,digest in manifest['files'].items():
-    source=bundle/name;assert source.is_file() and not source.is_symlink() and hashlib.sha256(source.read_bytes()).hexdigest()==digest
-    target=repository/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+    source=bundle/name;content=overrides.get(name,source.read_bytes());assert source.is_file() and not source.is_symlink() and hashlib.sha256(content).hexdigest()==digest
+    target=repository/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(content)
 (repository/'APP_UPDATE_MANIFEST.json').write_bytes(raw)
 git('add','-A','--force')
 names=set(git('ls-files','-z').stdout.decode().strip('\0').split('\0'));assert names==set(manifest['files'])|{'APP_UPDATE_MANIFEST.json'}

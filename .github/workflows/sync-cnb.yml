@@ -28,6 +28,7 @@ jobs:
           askpass="$RUNNER_TEMP/cnb-askpass.sh"
           cat > "$askpass" <<'EOF'
           #!/bin/sh
+          case "$1" in *https://cnb.cool*|*https://cnb@cnb.cool*) ;; *) exit 1 ;; esac
           case "$1" in *Username*) printf '%s' cnb ;; *) printf '%s' "$CNB_SYNC_TOKEN" ;; esac
           EOF
           chmod 700 "$askpass"
