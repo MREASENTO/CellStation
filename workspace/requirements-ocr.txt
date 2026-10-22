@@ -1,0 +1,8 @@
+ddddocr==1.6.1
+onnxruntime==1.31.0
+numpy==2.5.4
+Pillow==13.0.0
+opencv-python==5.0.0.93
+flatbuffers==25.12.19
+packaging==26.3
+protobuf==7.36.2

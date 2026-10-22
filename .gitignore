@@ -1,0 +1,15 @@
+work/
+outputs/
+**/data/
+**/node_modules/
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pem
+*.key
+*.log
+.env*
+hosts.yml
+credentials*
+manager-state.json
+wechat-settings.json

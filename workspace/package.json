@@ -1,0 +1,20 @@
+{
+  "name": "cellstation-booking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Windows cell station reservation manager",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  },
+  "scripts": {
+    "test": "node --test booking.test.cjs manager.test.cjs desktop-integration.test.cjs operations.test.cjs retry-policy.test.cjs account-owner.test.cjs v07.test.cjs v071.test.cjs",
+    "start": "node manager-server.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "45.0.0"
+  }
+}

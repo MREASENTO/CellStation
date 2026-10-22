@@ -1,0 +1,66 @@
+name: Build and publish release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: New version, such as 1.0.1
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: formal-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      CELLSTATION_DISABLE_UPDATES: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Prepare version and dependencies
+        env:
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          python scripts/bump-version.py $env:NEW_VERSION
+          npm ci --prefix workspace
+          python scripts/bootstrap-build.py
+      - name: Validate logic and updater rollback
+        working-directory: workspace
+        run: |
+          $tests = @(Get-ChildItem -Filter '*.test.cjs' -File | Select-Object -ExpandProperty Name)
+          node --test @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B v100-update-helper.test.py
+      - name: Build and sign public package
+        env:
+          CELLSTATION_UPDATE_SIGNING_KEY: ${{ secrets.CELLSTATION_UPDATE_SIGNING_KEY }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          workspace/.venv/Scripts/python.exe workspace/build-desktop.py
+          node workspace/build-desktop.cjs
+          python workspace/package-desktop.py
+          node workspace/sign-release.cjs "outputs/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json
+      - name: Commit release source and publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add workspace README.md
+          git commit -m "Release v$env:NEW_VERSION"
+          git push origin HEAD:main
+          gh release create "v$env:NEW_VERSION" "outputs/CellStation-v$env:NEW_VERSION-win64.zip" "outputs/CellStation-v$env:NEW_VERSION-win64.sha256.txt" --target main --title "CellStation $env:NEW_VERSION" --notes "Stable Windows portable release; account data excluded."
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item work/latest.json update/latest.json
+          git add update/latest.json
+          git commit -m "Publish signed update feed for v$env:NEW_VERSION"
+          git push origin HEAD:main
