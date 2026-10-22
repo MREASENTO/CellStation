@@ -1,0 +1,41 @@
+name: Sync public source and updates to CNB
+on:
+  push:
+    branches: [main, app-stable]
+    tags: ['v*', 'app-v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cnb-sync-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Push the current public ref
+        env:
+          CNB_SYNC_TOKEN: ${{ secrets.CNB_SYNC_TOKEN }}
+          SOURCE_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CNB_SYNC_TOKEN"
+          case "$SOURCE_REF" in refs/heads/main|refs/heads/app-stable|refs/tags/v*|refs/tags/app-v*) ;; *) exit 1 ;; esac
+          askpass="$RUNNER_TEMP/cnb-askpass.sh"
+          cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          case "$1" in *Username*) printf '%s' cnb ;; *) printf '%s' "$CNB_SYNC_TOKEN" ;; esac
+          EOF
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+          git -c credential.helper= push https://cnb.cool/mreasento/CellStation "HEAD:$SOURCE_REF"
+          if git show-ref --verify --quiet refs/remotes/origin/app-stable; then
+            git -c credential.helper= push https://cnb.cool/mreasento/CellStation refs/remotes/origin/app-stable:refs/heads/app-stable
+          fi
+          while IFS= read -r ref; do
+            git -c credential.helper= push https://cnb.cool/mreasento/CellStation "$ref:$ref"
+          done < <(git for-each-ref --format='%(refname)' 'refs/tags/app-v*')

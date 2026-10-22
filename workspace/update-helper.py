@@ -1,6 +1,52 @@
 """Detached portable updater; replaces application files and preserves data/ intact."""
 from pathlib import Path, PurePosixPath
 import os,sys,json,time,hashlib,zipfile,shutil,subprocess,stat,ctypes
+import re
+
+def safe_app_path(name):
+    if not isinstance(name,str) or not name or any(c in name for c in ['\\',':','\x00']):return False
+    parts=name.split('/')
+    if any(not p or p in ('.','..') or p.endswith(('.',' ')) or re.match(r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)',p,re.I) for p in parts):return False
+    return name in ('README.txt','PACKAGE_MANIFEST.json') or (name.startswith('resources/app/') and parts[2].lower()!='runtime')
+
+def app_manifest(raw,version,runtime_id,expected_hash=None):
+    if len(raw)>2*1024**2 or (expected_hash and hashlib.sha256(raw).hexdigest()!=expected_hash):raise ValueError('App manifest checksum mismatch')
+    m=json.loads(raw)
+    if m.get('product')!='CellStation' or m.get('kind')!='app' or m.get('version')!=version or m.get('runtimeId')!=runtime_id or m.get('accountDataIncluded') is not False:raise ValueError('App manifest mismatch')
+    files=m.get('files')
+    if not isinstance(files,dict) or not 1<=len(files)<=20000 or 'resources/app/package.json' not in files or 'PACKAGE_MANIFEST.json' not in files:raise ValueError('App files incomplete')
+    seen=set()
+    for name,digest in files.items():
+        if not safe_app_path(name) or name.lower() in seen or not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest):raise ValueError('Unsafe app file')
+        seen.add(name.lower())
+    return m
+
+def validate_app_archive(archive,version,runtime_id,manifest_hash,install=None):
+    if not re.fullmatch('[a-f0-9]{64}',runtime_id) or not re.fullmatch('[a-f0-9]{64}',manifest_hash):raise ValueError('Invalid signed app metadata')
+    with zipfile.ZipFile(archive) as z:
+        names=set();files=set();total=0
+        for item in z.infolist():
+            p=PurePosixPath(item.filename)
+            if '\\' in item.filename or p.is_absolute() or '..' in p.parts or not p.parts or p.parts[0]!='CellStation-win32-x64' or any(':' in part for part in p.parts):raise ValueError('Unsafe ZIP path')
+            normalized='/'.join(p.parts).lower()
+            if normalized in names or stat.S_ISLNK(item.external_attr>>16):raise ValueError('Duplicate or linked ZIP entry')
+            names.add(normalized);total+=item.file_size
+            if total>128*1024**2:raise ValueError('App update too large')
+            if item.is_dir():continue
+            relative='/'.join(p.parts[1:])
+            if relative!='APP_UPDATE_MANIFEST.json' and not safe_app_path(relative):raise ValueError('App update touches runtime or data')
+            files.add(relative)
+        m=app_manifest(z.read('CellStation-win32-x64/APP_UPDATE_MANIFEST.json'),version,runtime_id,manifest_hash)
+        if files!=set(m['files'])|{'APP_UPDATE_MANIFEST.json'}:raise ValueError('Unlisted or missing app update file')
+        for name,digest in m['files'].items():
+            if hashlib.sha256(z.read('CellStation-win32-x64/'+name)).hexdigest()!=digest:raise ValueError('App file checksum mismatch')
+        package=json.loads(z.read('CellStation-win32-x64/resources/app/package.json'))
+        bundle=json.loads(z.read('CellStation-win32-x64/PACKAGE_MANIFEST.json'))
+        if package.get('version')!=version or bundle.get('version')!=version or bundle.get('runtimeId')!=runtime_id or bundle.get('accountDataIncluded') is not False:raise ValueError('App package mismatch')
+    if install:
+        previous=json.loads((Path(install)/'APP_UPDATE_MANIFEST.json').read_text(encoding='utf-8'))
+        app_manifest(json.dumps(previous).encode(),previous.get('version'),runtime_id)
+    return m
 
 def long_path(value):
     text=str(value)
@@ -48,7 +94,12 @@ def apply_update(transaction):
     if data!=install/'data' or not tx.is_relative_to(data/'updates') or not archive.is_relative_to(data/'updates'):raise ValueError('Unexpected update directories')
     with archive.open('rb') as source:digest=hashlib.file_digest(source,'sha256').hexdigest()
     if digest!=params['sha256']:raise ValueError('Update checksum mismatch')
-    validate_archive(archive,params['version']);wait_exit(params['pid'])
+    partial=params.get('kind','full')=='app'
+    if partial:
+        incoming=validate_app_archive(archive,params['version'],params['runtimeId'],params['manifestSha256'],install)
+        previous=json.loads((install/'APP_UPDATE_MANIFEST.json').read_text(encoding='utf-8'))
+    else:validate_archive(archive,params['version'])
+    wait_exit(params['pid'])
     no_links(install)
     stage=tx.parent/'staged';backup=tx.parent/'rollback'
     if stage.exists() or backup.exists():raise ValueError('Update transaction already used')
@@ -71,10 +122,20 @@ def apply_update(transaction):
         return subprocess.Popen(arguments,cwd=install,env=env,creationflags=flags,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     child=None
     try:
-        for item in app.iterdir():
-            destination=install/item.name
-            if destination.exists():shutil.move(str(destination),str(backup/item.name));old.append(item.name)
-            shutil.move(str(item),str(destination));new.append(item.name)
+        if partial:
+            operations=[]
+            for name,digest in incoming['files'].items():
+                target=install/name
+                if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest()!=digest:operations.append(name)
+            operations+=sorted(name for name in previous['files'] if name.lower() not in {n.lower() for n in incoming['files']})
+            operations.append('APP_UPDATE_MANIFEST.json')
+        else:operations=[item.name for item in app.iterdir()]
+        for name in operations:
+            item=app/name;destination=install/name;preserved=backup/name
+            if destination.exists():
+                preserved.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(destination),str(preserved));old.append(name)
+            if item.exists():
+                destination.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(item),str(destination));new.append(name)
         child=launch(True)
         deadline=time.monotonic()+90
         while time.monotonic()<deadline:
@@ -99,5 +160,6 @@ def apply_update(transaction):
         raise
 
 if __name__=='__main__':
-    if sys.argv[1]=='--validate':validate_archive(sys.argv[2],sys.argv[3])
+    if sys.argv[1]=='--validate-app':validate_app_archive(*sys.argv[2:])
+    elif sys.argv[1]=='--validate':validate_archive(sys.argv[2],sys.argv[3])
     else:apply_update(sys.argv[1])

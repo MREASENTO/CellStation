@@ -19,4 +19,8 @@ name='electron-v45.0.0-win32-x64.zip';fetch('https://github.com/electron/electro
 checks=electron/'SHASUMS256.txt';fetch('https://github.com/electron/electron/releases/download/v45.0.0/SHASUMS256.txt',checks)
 expected=next(line.split()[0] for line in checks.read_text().splitlines() if line.split()[-1].lstrip('*')==name)
 with (electron/name).open('rb') as source:assert hashlib.file_digest(source,'sha256').hexdigest()==expected
+mingit=json.loads((root/'workspace/mingit-source.json').read_text(encoding='utf-8'))
+mingit_zip=work/'mingit.zip';fetch(mingit['url'],mingit_zip)
+assert hashlib.sha256(mingit_zip.read_bytes()).hexdigest()==mingit['sha256']
+with zipfile.ZipFile(mingit_zip) as archive:assert archive.testzip() is None;archive.extractall(work/'mingit-runtime')
 print('BUILD_DEPENDENCIES_READY')

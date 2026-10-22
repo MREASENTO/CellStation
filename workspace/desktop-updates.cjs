@@ -5,7 +5,7 @@ const execFile=require('node:util').promisify(require('node:child_process').exec
 const {AppUpdater,CURRENT_VERSION}=require('./app-updater.cjs');
 class DesktopUpdates extends AppUpdater{
   constructor({app,dataRoot,getManager,quit,progress,isBackground=()=>false}){
-    super({dataRoot,config:require('./release-config.json'),progress,canInstall:()=>{
+    super({dataRoot,installRoot:path.dirname(process.execPath),config:require('./release-config.json'),progress,canInstall:()=>{
       const manager=getManager();if(!manager||manager.scheduler.busy.size||manager.scheduler.prepared.size||manager.operations.checkPromise)return false;
       return !manager.store.data.config.enabled||!manager.scheduler.plan(1).some(j=>j.releaseAt>=Date.now()-60000&&j.releaseAt<=Date.now()+240000);
     },onInstall:async(file,release)=>{
@@ -17,9 +17,9 @@ class DesktopUpdates extends AppUpdater{
       for(const entry of fs.readdirSync(pythonRoot,{withFileTypes:true}))if(entry.isFile())fs.copyFileSync(path.join(pythonRoot,entry.name),path.join(runner,entry.name));
       fs.writeFileSync(path.join(runner,'python313._pth'),'python313.zip\n.\n');
       fs.copyFileSync(path.join(__dirname,'update-helper.py'),path.join(runner,'update-helper.py'));
-      await execFile(path.join(runner,'python.exe'),['-B',path.join(runner,'update-helper.py'),'--validate',file,release.version],{windowsHide:true,timeout:60000});
+      await execFile(path.join(runner,'python.exe'),['-B',path.join(runner,'update-helper.py'),...(release.kind==='app'?['--validate-app',file,release.version,release.gitRuntimeId,release.gitManifestSha256,install]:['--validate',file,release.version])],{windowsHide:true,timeout:60000});
       const manager=getManager();fs.writeFileSync(path.join(dataRoot,'updates/resume.json'),JSON.stringify({enabled:manager.store.data.config.enabled}));
-      const config=path.join(transaction,'transaction.json');fs.writeFileSync(config,JSON.stringify({install,data:dataRoot,archive:file,sha256:release.sha256,version:release.version,nonce,pid:process.pid,background:isBackground()}));
+      const config=path.join(transaction,'transaction.json');fs.writeFileSync(config,JSON.stringify({install,data:dataRoot,archive:file,sha256:release.sha256,version:release.version,nonce,pid:process.pid,background:isBackground(),kind:release.kind||'full',runtimeId:release.gitRuntimeId,manifestSha256:release.gitManifestSha256}));
       const child=spawn(path.join(runner,'python.exe'),['-B',path.join(runner,'update-helper.py'),config],{detached:true,windowsHide:true,stdio:'ignore'});
       await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});child.unref();await quit();
     }});

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: New version, such as 1.0.1
+        description: New version, such as 1.0.3
         required: true
         type: string
 permissions:
@@ -41,6 +41,10 @@ jobs:
           node --test @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B v100-update-helper.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B v102-update-helper.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B v102-app-package.test.py
       - name: Build and sign public package
         env:
           CELLSTATION_UPDATE_SIGNING_KEY: ${{ secrets.CELLSTATION_UPDATE_SIGNING_KEY }}
@@ -52,7 +56,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python workspace/package-desktop.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node workspace/sign-release.cjs "outputs/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json
+      - name: Publish application update Git branch and sign manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CELLSTATION_UPDATE_SIGNING_KEY: ${{ secrets.CELLSTATION_UPDATE_SIGNING_KEY }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          python -B scripts/publish-app.py "outputs/release-v$env:NEW_VERSION/CellStation-win32-x64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node workspace/sign-release.cjs "outputs/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json --env-key "work/app-update-v$env:NEW_VERSION.json"
       - name: Commit release source and publish assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,8 +77,16 @@ jobs:
           git push origin HEAD:main
           gh release create "v$env:NEW_VERSION" "outputs/CellStation-v$env:NEW_VERSION-win64.zip" "outputs/CellStation-v$env:NEW_VERSION-win64.sha256.txt" --target main --title "CellStation $env:NEW_VERSION" --notes "Stable Windows portable release; account data excluded."
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh api "repos/MREASENTO/CellStation/releases/tags/v$env:NEW_VERSION" > work/published-release.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/verify-release.py work/published-release.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item work/latest.json update/latest.json
           git add update/latest.json
           git commit -m "Publish signed update feed for v$env:NEW_VERSION"
           git push origin HEAD:main
 
+      - name: Synchronize release refs to CNB
+        env:
+          CNB_SYNC_TOKEN: ${{ secrets.CNB_SYNC_TOKEN }}
+        run: python -B scripts/sync-cnb.py

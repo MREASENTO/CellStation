@@ -1,12 +1,12 @@
 # CellStation
 
-Windows 本地实验设备预约工作台。当前正式版：**1.0.1**。
+Windows 本地实验设备预约工作台。当前正式版：**1.0.2**。
 
-[下载正式版](https://github.com/MREASENTO/CellStation/releases/latest) · [微信通知教程](docs/wechat.md) · [开发与发布](docs/development.md)
+[国内仓库](https://cnb.cool/mreasento/CellStation) · [下载正式版](https://github.com/MREASENTO/CellStation/releases/latest) · [微信通知教程](docs/wechat.md) · [开发与发布](docs/development.md)
 
 ## 开始使用
 
-1. 下载 `CellStation-v1.0.1-win64.zip`，完整解压到可写短路径，例如 `F:\CellStation`。
+1. 下载 `CellStation-v1.0.2-win64.zip`，完整解压到可写短路径，例如 `F:\CellStation`。
 2. 运行 `CellStation.exe`。运行环境、OCR模型随程序提供；电脑需安装 Google Chrome。
 3. 在账号管理录入有权限的登录账号；在设置中按名称检索、添加设备，启用设备并调整顺序。
 4. 勾选预约时间段，检查每日随机分配，也可随时手动调整。网站或登录暂时失败也可启动等待；实际任务准备时重新连接网站、登录并检查设备。
@@ -21,7 +21,7 @@ Windows 本地实验设备预约工作台。当前正式版：**1.0.1**。
 - 启动调度只检查本地必要环境与配置；可选的网站/账号检测仅作提示，不发送微信。实际任务最终失败才按通知设置推送。
 - 启动检查进度小窗，自检集中在设置；隐藏浏览器，不接管鼠标键盘。
 - Windows失败提醒，Server酱Turbo及PushPlus微信通知；毫秒步骤时间、失败截图和诊断导出。
-- 启动自动更新，国内下载加速与GitHub直连回退，签名/大小/SHA256验证；空闲时安装，启动失败回退。
+- CNB 国内 Git 增量更新，GitHub 备用；应用文件按差异拉取，运行环境变化时更新完整包；签名及逐文件SHA256验证，空闲安装、失败回退。
 - 默认7天压缩、30天清理生成日志和截图，保留预约记录及诊断原因。
 
 ![计划展开和结果](docs/images/桌面版v1.0.0_计划展开与结果.png)
@@ -37,3 +37,5 @@ Windows 本地实验设备预约工作台。当前正式版：**1.0.1**。
 本地逻辑测试、更新事务回退测试、Windows EXE启动及本地OCR、界面和便携包搬移验证均执行后发布；验证期间不提交真实预约。微信送达还需用户完成服务绑定并在设置发送测试消息。
 
 开发说明包含完整构建和签名发布流程。
+
+1.0.1及更早版本需先完整升级一次到1.0.2，之后使用Git更新通道。首次拉取会初始化应用代码缓存，后续只拉取新增Git对象。程序已内置MinGit，无需手动安装。
