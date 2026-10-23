@@ -31,10 +31,11 @@ async function createManager(options = {}) {
   let shuttingDown = false;
   let application;
   let operations;
+  let reviews;
   let wechat;
   let controlRevision = 0;
   let pendingStart = false;
-  const ensureIdle = () => { if (scheduler?.busy.size) throw new Error('上一任务仍在执行或核对结果，请稍后再操作'); };
+  const ensureIdle = () => { if (reviews?.active) throw new Error('核对正在进行或网页尚未关闭，请稍后操作'); if (scheduler?.busy.size) throw new Error('上一任务仍在执行或核对结果，请稍后再操作'); };
   const loginTests = new Set();
   const server = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
@@ -56,7 +57,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.3' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.4' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -82,6 +83,7 @@ async function createManager(options = {}) {
         if (req.method === 'PUT' && url.pathname === '/api/retry-policy') {
           store.setRetryPolicy(await body(req)); return send(200, { retryPolicy: store.data.config.retryPolicy });
         }
+        if (req.method === 'POST' && ['/api/reviews/recheck','/api/reviews/open'].includes(url.pathname)) { const input=await body(req); return send(200,await (url.pathname.endsWith('/open')?reviews.openWebsite(input.jobId):reviews.recheck(input.jobId))); }
         if (req.method === 'POST' && url.pathname === '/api/summary') return send(200, operations.summary((await body(req)).date));
         if (req.method === 'POST' && url.pathname === '/api/summary/export') return send(200, operations.exportSummary((await body(req)).date));
         if (req.method === 'POST' && url.pathname === '/api/backup/export') {
@@ -238,11 +240,14 @@ async function createManager(options = {}) {
     }
     scheduler = new Scheduler(store, worker, clock);
     operations = new Operations({ root: options.operationsRoot || options.directory || ROOT, store, worker, clock, desktop: options.desktopIntegration, localCheck: options.localCheck, onProgress: options.onStartupProgress, canMaintain: () => !scheduler.busy.size && !pendingStart && (!store.data.config.enabled || !scheduler.plan(1).some(j => j.releaseAt >= clock() - 60000 && j.releaseAt <= clock() + 120000)) });
+    reviews = options.reviewFactory ? options.reviewFactory(store) : new (require('./reviews.cjs').Reviews)(store,options.operationsRoot||ROOT,{clock,canRun:job=>!operations.checkPromise&&!loginTests.has(job.accountId)&&![...scheduler.activeAccounts.values()].includes(job.accountId)&&![...scheduler.prepared.keys()].some(id=>store.data.jobs[id]?.accountId===job.accountId)&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.accountId===job.accountId&&j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
+    scheduler.externalBusy=accountId=>reviews.isAccountBusy?.(accountId)||false;
+    if (options.runScheduler !== false) reviews.start();
     if (options.runScheduler !== false) operations.start();
     if (options.runScheduler !== false) await scheduler.start();
   } catch (error) { server.close(); throw error; }
-  application = { server, store, scheduler, worker, operations, wechat, controlRevision: () => controlRevision, setStartupPending: value => { pendingStart = Boolean(value); }, cancelPendingStart: () => { controlRevision++; pendingStart = false; }, url: `http://127.0.0.1:${server.address().port}`,
-    close: async () => { if (shuttingDown) return; shuttingDown = true; controlRevision++; operations.cancel(); clearInterval(scheduler.timer); await scheduler.stop(); await operations.checkPromise?.catch(() => {}); await operations.retentionPromise?.catch(() => {}); await wechat.idle(); await new Promise(resolve => server.close(resolve)); },
+  application = { server, store, scheduler, worker, operations, reviews, wechat, controlRevision: () => controlRevision, setStartupPending: value => { pendingStart = Boolean(value); }, cancelPendingStart: () => { controlRevision++; pendingStart = false; }, url: `http://127.0.0.1:${server.address().port}`,
+    close: async () => { if (shuttingDown) return; shuttingDown = true; controlRevision++; operations.cancel(); clearInterval(scheduler.timer); await reviews?.close(); await scheduler.stop(); await operations.checkPromise?.catch(() => {}); await operations.retentionPromise?.catch(() => {}); await wechat.idle(); await new Promise(resolve => server.close(resolve)); },
   };
   return application;
 }

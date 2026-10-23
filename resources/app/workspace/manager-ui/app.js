@@ -5,6 +5,23 @@ const day = ms => new Date(ms + 28800000).toISOString().slice(0, 10);
 const fmt = (ms, full = false) => Number.isFinite(Number(ms)) ? new Date(Number(ms) + 28800000).toISOString().slice(full ? 0 : 11, 23).replace('T', ' ') : '—';
 const identity = a => a.accountOwner || a.owner || a.username || a.accountLabel || '未分配账号';
 const labels = { queued:'等待准备', preparing:'登录准备中', ready:'等待开放', saving:'正在保存', success:'预约成功', already_exists:'已存在', failed:'执行失败', needs_review:'需核对', missed:'已错过', retrying:'等待重试', skipped:'已跳过', disabled:'未分配', planned:'计划中' };
+const reviewBusy = new Set();
+const needsAction = j => ['needs_review','failed','missed'].includes(j.status);
+const jobLabel = j => j.status==='needs_review' ? ({waiting:'待自动核对',checking:'正在核对',failed:'核对失败'}[j.review?.state]||'需核对') : ['waiting','running'].includes(j.recovery?.state) ? (j.recovery.state==='waiting'?'等待网站恢复':'恢复预约中') : labels[j.status]||j.status;
+const jobTone = j => j.status==='needs_review'||['waiting','running'].includes(j.recovery?.state)?'review':['success','already_exists'].includes(j.status)?'good':['failed','missed'].includes(j.status)?'bad':'muted';
+function reviewActions(job) {
+  const root=make('span','review-actions');root.dataset.jobId=job.id;
+  if(!needsAction(job))return root;
+  for(const [mode,text]of [['recheck','重新核对'],['open','打开网页核对']]){
+    const action=button(text,async()=>{
+      if(reviewBusy.has(job.id))return;reviewBusy.add(job.id);action.textContent=mode==='recheck'?'正在核对…':'正在登录…';
+      try{const result=await api('reviews/'+mode,{jobId:job.id});toast(result.message,false,result.verified||result.ready?'':'review');}
+      finally{reviewBusy.delete(job.id);await refresh();if(view==='reports')loadSummary();}
+    });
+    action.disabled=reviewBusy.has(job.id)||job.review?.state==='checking';root.append(action);
+  }
+  return root;
+}
 const steps = { server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'保存阶段POST请求', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
 let state, preview, restoreToken, view = 'overview', controlPending = false, offset = 0;
 let previewRequest = 0, summaryRequest = 0;
@@ -34,7 +51,7 @@ for (const id of dateIds) {
 }
 const dirty = new Set(), timers = new Map(), revisions = new Map();
 let queue = Promise.resolve(), toastTimer, saveErrors = new Map();
-function toast(text, error = false) { $('#toast').textContent = text; $('#toast').className = error ? 'error' : ''; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 9000 : 3500); }
+function toast(text, error = false, tone = '') { $('#toast').textContent = text; $('#toast').className = error ? 'error' : tone; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 9000 : 3500); }
 async function api(route, body, method = 'POST') {
   const response = await fetch('/api/' + route, { method, headers:{'Content-Type':'application/json','X-CSRF-Token':state?.csrfToken || ''}, ...(body === undefined ? {} : { body:JSON.stringify(body) }) });
   const result = await response.json(); if (!response.ok) throw new Error(result.error || '操作未完成'); return result;
@@ -71,7 +88,7 @@ function render() {
   $('#equipment-current').textContent='当前：'+state.config.equipment.equipmentName;
   let active = state.jobs.find(j=>j.status==='saving') || state.jobs.find(j=>j.status==='preparing') || state.jobs.find(j=>j.status==='ready') || state.jobs.find(j=>j.status==='retrying');
   const selectedCount=state.config.windows.filter(w=>w.enabled).length;
-  let caption = state.pendingStart || controlPending ? '启动检测中' : state.config.enabled ? active ? labels[active.status] : !selectedCount ? '运行中 · 未选择预约窗口' : selectedCount>enabled.length ? '运行中 · 账号不足' : '运行中 · 等待下次开放' : '已暂停 · 不执行预约';
+  let caption = state.pendingStart || controlPending ? '启动检测中' : state.config.enabled ? active ? labels[active.status] : state.jobs.some(j=>j.review?.state==='checking')?'运行中 · 正在核对':state.jobs.some(j=>j.recovery?.state==='waiting')?'运行中 · 等待网站恢复':state.jobs.some(j=>j.status==='needs_review'&&j.review?.state==='waiting')?'运行中 · 等待自动核对':!selectedCount ? '运行中 · 未选择预约窗口' : selectedCount>enabled.length ? '运行中 · 账号不足' : '运行中 · 等待下次开放' : '已暂停 · 不执行预约';
   $('#persistent-run-status').textContent=caption;$('#persistent-run-status').dataset.active=String(state.config.enabled);
   const chip=$('#running-state'); chip.textContent=caption; chip.className='state-chip '+((state.pendingStart||controlPending)?'checking':state.config.enabled?(active?.status==='saving'?'saving':'running'):'paused');
   const control=$('#control-button'); control.textContent=(state.pendingStart||controlPending)?'取消启动':state.config.enabled?'暂停调度':'启动调度'; control.disabled=false;
@@ -124,13 +141,15 @@ function renderPlan() {
     const key=$('#plan-date').value+'|'+w.id,list=jobs.filter(j=>j.windowId===w.id),group=make('details','plan-group'),head=make('summary','plan-group-head');
     group.dataset.windowId=w.id;group.open=planOpen.get(key)??false;
     const statusFor=j=>{const record=state.jobs.find(r=>r.id===j.id);return record?.status||(j.skipped?'skipped':j.available?(state.config.enabled?'planned':'queued'):'disabled');};
-    const good=list.filter(j=>['success','already_exists'].includes(statusFor(j))).length,bad=list.filter(j=>['failed','needs_review','missed'].includes(statusFor(j))).length;
-    head.append(make('span','window-number',String(index+1).padStart(2,'0')),make('strong','',w.start+' — '+w.end),make('small','',list[0]?identity(list[0]):'未分配账号'),make('span',bad?'plan-result bad':'plan-result good',`成功 ${good} / ${list.filter(j=>j.available).length} · 失败 ${bad}`));group.append(head);
+    const info=j=>({...j,...state.jobs.find(r=>r.id===j.id),status:statusFor(j)});
+    const good=list.filter(j=>jobTone(info(j))==='good').length,bad=list.filter(j=>jobTone(info(j))==='bad').length,review=list.filter(j=>info(j).status==='needs_review').length,recovering=list.filter(j=>['waiting','running'].includes(info(j).recovery?.state)).length;
+    const result=make('span','plan-result');result.append(make('span','good',`成功 ${good} / ${list.filter(j=>j.available).length}`),make('span',bad?'bad':'muted',`失败 ${bad}`));if(review)result.append(make('span','review','需核对 '+review));if(recovering)result.append(make('span','review','待恢复 '+recovering));
+    head.append(make('span','window-number',String(index+1).padStart(2,'0')),make('strong','',w.start+' — '+w.end),make('small','',list[0]?identity(list[0]):'未分配账号'),result);group.append(head);
     group.addEventListener('toggle',()=>planOpen.set(key,group.open));
     const slots=make('div','plan-slots');
-    for(const j of list) { const status=statusFor(j),good=['success','already_exists'].includes(status),bad=['failed','needs_review','missed'].includes(status),r=make('div','slot-row');
-      const indicator=make('span','result-indicator '+(good?'good':bad?'bad':'muted'),good?'✓':bad?'✕':'·');indicator.setAttribute('aria-label',good?'预约成功':bad?'预约未成功':'尚未执行');
-      r.append(indicator,make('span','',j.start+' – '+j.end),make('span','slot-device',j.equipment?.equipmentName||'设备'),make('span','release','开放于 '+fmt(j.releaseAt).slice(0,5)),make('span','slot-status '+(good?'good':bad?'bad':''),status==='disabled'&&!j.selected?'未勾选':labels[status]));slots.append(r); }
+    for(const j of list) { const record=info(j),status=record.status,tone=jobTone(record),good=tone==='good',bad=tone==='bad',review=tone==='review',r=make('div','slot-row');
+      const indicator=make('span','result-indicator '+tone,good?'✓':bad?'✕':review?'?':'·');indicator.setAttribute('aria-label',good?'预约成功':bad?'预约未成功':review?'预约结果待处理':'尚未执行');
+      r.append(indicator,make('span','',j.start+' – '+j.end),make('span','slot-device',j.equipment?.equipmentName||'设备'),make('span','release','开放于 '+fmt(j.releaseAt).slice(0,5)),make('span','slot-status '+tone,status==='disabled'&&!j.selected?'未勾选':jobLabel(record)));slots.append(r);if(needsAction(record)){const actions=make('div','slot-review-actions');actions.append(reviewActions(record));slots.append(actions);} }
     group.append(slots);root.append(group);
   }
 }
@@ -218,28 +237,34 @@ function renderHistory() {
   for(const j of state.jobs) {
     const row=make('tr'),time=make('td');time.append(make('strong','',j.date+' '+j.start+'–'+j.end),make('span','small',j.equipment?.equipmentName||'历史仪器'));
     const detail=make('td','',String(j.message||'').replace(/\x1b\[[0-9;]*m/g,'').split('\n')[0]);detail.title=j.message||'';
+    if(j.review?.message)detail.append(make('span','small '+(j.review.state==='verified'?'good':'review'),j.review.message));
+    if(j.recheckedAt)detail.append(make('strong','confirmation','复核读回确认 '+fmt(j.recheckedAt,true)));
+    if(j.review?.state==='waiting')detail.append(make('span','small review','自动核对时间 '+fmt(j.review.nextAt,true)));
+    if(j.recovery?.state==='waiting')detail.append(make('span','small review','下次登录重试 '+fmt(j.recovery.nextAt,true)));
+    if(needsAction(j))detail.append(reviewActions(j));
     if(j.savingAt) detail.append(make('span','small','保存调用 '+fmt(j.savingAt,true)));
     if(j.confirmedAt) detail.append(make('strong','confirmation','网站读回确认 '+fmt(j.confirmedAt,true)),make('span','small',`开放→确认 ${j.confirmationDelayMs} ms · 保存→确认 ${j.submissionToConfirmationMs ?? '—'} ms`));
     if(j.reservationId) detail.append(make('span','small','预约编号 '+j.reservationId));
     const timeline=make('details','timeline'),summary=make('summary','','查看步骤时间与耗时（毫秒）');timeline.dataset.id=j.id;timeline.open=expanded.has(j.id);timeline.append(summary);
     for(const t of j.timeline||[]) { const line=make('div','timeline-row');line.append(make('time','',fmt(t.at,true)),make('b','',steps[t.step]||t.step),make('span','',t.detail),make('span','mono',`+${t.elapsedMs.toFixed(3)} ms`));timeline.append(line); } if(!(j.timeline||[]).length)timeline.append(make('p','muted','旧版记录未采集步骤时间。'));detail.append(timeline);
-    if(j.diagnosticId){time.append(button('查看失败截图',()=>showFailure(j)));detail.append(button('导出诊断ZIP',async()=>exportResult(await api('diagnostics/export',{jobId:j.id}))));}
-    row.append(time,make('td','',identity(j)),make('td','mono',fmt(j.releaseAt,true)),make('td','status-'+j.status,labels[j.status]||j.status),detail);root.append(row);
+    if(j.diagnosticId){time.append(button('查看诊断截图',()=>showFailure(j)));detail.append(button('导出诊断ZIP',async()=>exportResult(await api('diagnostics/export',{jobId:j.id}))));}
+    row.append(time,make('td','',identity(j)),make('td','mono',fmt(j.releaseAt,true)),make('td','status-'+j.status+' '+jobTone(j),jobLabel(j)),detail);root.append(row);
   }
 }
 let failureSelection;
 async function showFailure(job, selected = job.diagnosticId) {
   const dialog = $('#failure-dialog');
   if (!dialog.open) dialog.showModal();
-  $('#failure-image').hidden = true; $('#failure-empty').hidden = false; $('#failure-empty').textContent = '正在读取失败截图…';
+  $('#failure-image').hidden = true; $('#failure-empty').hidden = false; $('#failure-empty').textContent = '正在读取诊断截图…';
   const response = await fetch('/api/diagnostics/' + selected);
   const report = await response.json(); if (!response.ok) { $('#failure-empty').textContent = report.error; return; }
   failureSelection = report.id;
+  $('#failure-review-actions').replaceChildren(reviewActions(job));
   $('#failure-caption').textContent = `${job.date || ''} ${job.start || ''}–${job.end || ''} · ${identity(job)} · ${report.phase}`;
   $('#failure-detail').textContent = `${fmt(Date.parse(report.at), true)} · ${report.error}`;
   const attempts = $('#failure-attempts'); attempts.replaceChildren();
   const ids = [...new Set([...(job.diagnosticIds || []), job.diagnosticId].filter(Boolean))];
-  ids.forEach((id, i) => attempts.append(button(`第${i + 1}次失败`, () => showFailure(job, id), 'button subtle')));
+  ids.forEach((id, i) => attempts.append(button(`第${i + 1}次诊断`, () => showFailure(job, id), 'button subtle')));
   if (report.imageUrl) { $('#failure-image').src = report.imageUrl; $('#failure-image').hidden = false; $('#failure-empty').hidden = true; }
   else $('#failure-empty').textContent = report.screenshotError || '本次失败时浏览器尚未启动或已经关闭，未能生成截图；诊断原因已保留。';
 }
@@ -250,7 +275,7 @@ function renderHealth() {
   $('#startup-check').textContent=local?`程序打开前必要自检：${local.status==='pass'?'通过':'未通过'} · ${local.items.map(i=>i.title+' '+(i.status==='pass'?'✓':'×')).join('；')}`:'本地必要自检将在桌面程序打开前运行。';
   $('#health-status').textContent=check?.running?'正在检测…':check?.canStart?(check.status==='warning'?'可启动调度；网站或登录提示见下方':'检测通过，可启动调度'):check?.status==='fail'?'检测失败，请检查下列项目':'可直接启动等待；网站和账号在实际任务准备时检查';
   $('#run-healthcheck').disabled=Boolean(check?.running||state.config.enabled);$('#cancel-start').hidden=!(state.pendingStart||controlPending);
-  const root=$('#health-items');root.replaceChildren(); for(const item of check?.items||[]) { const e=make('div','health-item '+item.status);e.append(make('b','',item.title),make('span','',item.status==='pass'?'通过':item.status==='fail'?'失败':item.status==='warn'?'提示':'检查中'),make('p','',item.detail));if(item.diagnosticId)e.append(button('查看失败截图',()=>showFailure({date:'自检',accountLabel:item.title,diagnosticId:item.diagnosticId})));root.append(e); }
+  const root=$('#health-items');root.replaceChildren(); for(const item of check?.items||[]) { const e=make('div','health-item '+item.status);e.append(make('b','',item.title),make('span','',item.status==='pass'?'通过':item.status==='fail'?'失败':item.status==='warn'?'提示':'检查中'),make('p','',item.detail));if(item.diagnosticId)e.append(button('查看诊断截图',()=>showFailure({date:'自检',accountLabel:item.title,diagnosticId:item.diagnosticId})));root.append(e); }
 }
 function renderActivity() {const root=$('#activity-list');root.replaceChildren();for(const e of state.events.slice(0,5)){const row=make('div','activity-item');row.append(make('p','',e.message),make('time','',fmt(Date.parse(e.at),true)));root.append(row);} }
 function renderExclusions(){const root=$('#exclusion-list');root.replaceChildren();for(const [i,e] of state.config.exclusions.entries()){const row=make('div','exclusion-entry');row.append(make('b','',e.date+' · '+(e.windowIds.length===5?'整天':e.windowIds.map(id=>state.windows.find(w=>w.id===id)?.start).join('、'))),make('span','',e.reason),button('移除',async()=>{await api('exclusions',{entries:state.config.exclusions.filter((_,n)=>n!==i)},'PUT');preview=null;await refresh();}));root.append(row);} }
@@ -287,7 +312,7 @@ $('#run-healthcheck').addEventListener('click',async()=>{try{await api('healthch
 $('#test-notification').addEventListener('click',async()=>{try{toast((await api('desktop/test-notification',{})).message);}catch(e){toast(e.message,true);}});
 $('#quit-desktop').addEventListener('click',async()=>{try{await window.cellStationFlush();await api('desktop/quit',{});}catch(e){toast(e.message,true);}});
 $('#exclusion-form').addEventListener('submit',async e=>{e.preventDefault();const w=$('#exclusion-window').value;try{await api('exclusions',{entries:[...state.config.exclusions,{date:$('#exclusion-date').value,windowIds:w==='all'?state.windows.map(w=>w.id):[w],reason:$('#exclusion-reason').value||'临时跳过'}]},'PUT');preview=null;await refresh();toast('跳过规则已保存');}catch(e){toast(e.message,true);}});
-async function loadSummary(){if(!state)return;const date=$('#summary-date').value,request=++summaryRequest;try{const r=await api('summary',{date});if(request!==summaryRequest||date!==$('#summary-date').value)return;const stats=$('#summary-stats');stats.textContent=`成功 ${r.success} · 已存在 ${r.alreadyExists} · 失败 ${r.failed} · 待核对 ${r.uncertain} · 待执行 ${r.pending} · 跳过 ${r.skipped}`;const a=$('#summary-accounts'),rows=$('#summary-rows');a.replaceChildren();rows.replaceChildren();for(const x of r.byAccount){const tr=make('tr');tr.append(make('td','',identity(x)),make('td','',x.plannedMinutes/60),make('td','',x.confirmedHours));a.append(tr);}for(const x of [...r.rows].sort((a,b)=>b.start.localeCompare(a.start)||(a.equipmentOrder||0)-(b.equipmentOrder||0))){const tr=make('tr');tr.append(make('td','',x.start+'–'+x.end),make('td','',x.equipment?.equipmentName||'历史设备'),make('td','',identity(x)),make('td','status-'+x.status,labels[x.status]||x.status),make('td','',x.message));rows.append(tr);}}catch(e){if(request===summaryRequest)toast(e.message,true);}}
+async function loadSummary(){if(!state)return;const date=$('#summary-date').value,request=++summaryRequest;try{const r=await api('summary',{date});if(request!==summaryRequest||date!==$('#summary-date').value)return;const stats=$('#summary-stats');stats.textContent=`成功 ${r.success} · 已存在 ${r.alreadyExists} · 失败 ${r.failed} · 待核对 ${r.uncertain} · 待网站恢复 ${r.recovering||0} · 待执行 ${r.pending} · 跳过 ${r.skipped}`;const a=$('#summary-accounts'),rows=$('#summary-rows');a.replaceChildren();rows.replaceChildren();for(const x of r.byAccount){const tr=make('tr');tr.append(make('td','',identity(x)),make('td','',x.plannedMinutes/60),make('td','',x.confirmedHours));a.append(tr);}for(const x of [...r.rows].sort((a,b)=>b.start.localeCompare(a.start)||(a.equipmentOrder||0)-(b.equipmentOrder||0))){const tr=make('tr'),detail=make('td','',x.message);if(x.review?.message)detail.append(make('span','small '+jobTone(x),x.review.message));if(needsAction(x))detail.append(reviewActions(x));tr.append(make('td','',x.start+'–'+x.end),make('td','',x.equipment?.equipmentName||'历史设备'),make('td','',identity(x)),make('td','status-'+x.status+' '+jobTone(x),jobLabel(x)),detail);rows.append(tr);}}catch(e){if(request===summaryRequest)toast(e.message,true);}}
 function exportResult(r){$('#last-export').textContent=(r.files||[r.file]).join('\n');toast('已导出至本机文件夹');}
 $('#refresh-summary').addEventListener('click',loadSummary);$('#summary-date').addEventListener('change',loadSummary);
 $('#export-summary').addEventListener('click',async()=>{try{exportResult(await api('summary/export',{date:$('#summary-date').value}));}catch(e){toast(e.message,true);}});

@@ -6,7 +6,7 @@ const {AppUpdater,CURRENT_VERSION}=require('./app-updater.cjs');
 class DesktopUpdates extends AppUpdater{
   constructor({app,dataRoot,getManager,quit,progress,isBackground=()=>false}){
     super({dataRoot,installRoot:path.dirname(process.execPath),config:require('./release-config.json'),progress,canInstall:()=>{
-      const manager=getManager();if(!manager||manager.scheduler.busy.size||manager.scheduler.prepared.size||manager.operations.checkPromise)return false;
+      const manager=getManager();if(!manager||manager.scheduler.busy.size||manager.scheduler.prepared.size||manager.operations.checkPromise||manager.reviews?.active)return false;
       return !manager.store.data.config.enabled||!manager.scheduler.plan(1).some(j=>j.releaseAt>=Date.now()-60000&&j.releaseAt<=Date.now()+240000);
     },onInstall:async(file,release)=>{
       if(!app.isPackaged)throw new Error('开发环境不执行程序替换');
