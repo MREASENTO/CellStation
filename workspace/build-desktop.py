@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 root = Path(__file__).resolve().parent.parent
 source = root / 'workspace'
-stage = root / 'work' / 'desktop-stage-v1.0.2'
+stage = root / 'work' / 'desktop-stage-v1.0.3'
 if stage.exists():
     raise SystemExit('Stage already exists; choose a new stage version instead of overwriting')
 stage.mkdir()
@@ -18,7 +18,7 @@ shutil.copytree(source / 'fixtures', workspace / 'fixtures')
 for name in ['playwright','playwright-core']:
     shutil.copytree(source / 'node_modules' / name, workspace / 'node_modules' / name, ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2(source / 'desktop-main.cjs', stage / 'desktop-main.cjs')
-(stage / 'package.json').write_text(json.dumps({'name':'cellstation-desktop','productName':'CellStation','version':'1.0.2','main':'desktop-main.cjs','description':'Local desktop cell station reservation manager','author':'CellStation','private':True},indent=2),encoding='utf-8')
+(stage / 'package.json').write_text(json.dumps({'name':'cellstation-desktop','productName':'CellStation','version':'1.0.3','main':'desktop-main.cjs','description':'Local desktop cell station reservation manager','author':'CellStation','private':True},indent=2),encoding='utf-8')
 python = stage / 'runtime' / 'python'
 shutil.copytree(root / 'work' / 'python-embedded', python)
 packages = python / 'Lib' / 'site-packages'; packages.mkdir(parents=True)

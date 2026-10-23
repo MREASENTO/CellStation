@@ -6,7 +6,32 @@ const fmt = (ms, full = false) => Number.isFinite(Number(ms)) ? new Date(Number(
 const identity = a => a.accountOwner || a.owner || a.username || a.accountLabel || '未分配账号';
 const labels = { queued:'等待准备', preparing:'登录准备中', ready:'等待开放', saving:'正在保存', success:'预约成功', already_exists:'已存在', failed:'执行失败', needs_review:'需核对', missed:'已错过', retrying:'等待重试', skipped:'已跳过', disabled:'未分配', planned:'计划中' };
 const steps = { server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'保存阶段POST请求', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
-let state, preview, restoreToken, view = 'overview', controlPending = false, summaryLoading = false, offset = 0;
+let state, preview, restoreToken, view = 'overview', controlPending = false, offset = 0;
+let previewRequest = 0, summaryRequest = 0;
+const dateFollow = new DateFollow(), dateIds = ['plan-date','summary-date','exclusion-date','assignment-date'];
+const dateButtons = new Map();
+function syncDates(now = Date.now() + offset) {
+  const changed = [];
+  for (const id of dateIds) {
+    const input = $('#'+id), value = dateFollow.next(id,input.value,now,document.activeElement===input);
+    if (value !== input.value) { input.value = value; changed.push(id); }
+    const follow = dateFollow.follows(id), action = dateButtons.get(id);
+    action.textContent = follow ? '跟随今天＋7天' : '恢复跟随今天＋7天';
+    action.setAttribute('aria-pressed',String(follow));
+    action.title = follow ? '按北京时间，跨天自动翻到当天＋7天；可手动查看其他日期' : '当前为手动日期；点击恢复跨天自动翻页';
+  }
+  if (!state) return;
+  if (changed.includes('plan-date')) { preview = null; previewRequest++; renderPlan(); previewPlan(); }
+  if (changed.includes('summary-date')) loadSummary();
+  if (changed.includes('assignment-date')) loadAssignment(true).catch(e=>toast(e.message,true));
+}
+for (const id of dateIds) {
+  const input = $('#'+id), action = button('跟随今天＋7天',()=>{dateFollow.resume(id);syncDates();},'date-follow-button');
+  action.setAttribute('aria-label',(input.getAttribute('aria-label')||input.closest('label')?.childNodes[0]?.textContent.trim()||'目标预约日期')+'：恢复自动跟随');
+  input.insertAdjacentElement('afterend',action);dateButtons.set(id,action);
+  input.addEventListener('change',()=>{dateFollow.edit(id,input.value,Date.now()+offset);syncDates();});
+  input.addEventListener('blur',()=>syncDates());
+}
 const dirty = new Set(), timers = new Map(), revisions = new Map();
 let queue = Promise.resolve(), toastTimer, saveErrors = new Map();
 function toast(text, error = false) { $('#toast').textContent = text; $('#toast').className = error ? 'error' : ''; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 9000 : 3500); }
@@ -30,7 +55,7 @@ function theme() { const selected = $('#setting-theme').value || state?.config.t
 async function refresh() {
   try {
     const response = await fetch('/api/state'); if (!response.ok) throw new Error(); state = await response.json(); offset = state.serverTime - Date.now(); $('#connection-warning').hidden = true;
-    for (const id of ['plan-date','summary-date','exclusion-date','assignment-date']) if (!$('#'+id).value) $('#'+id).value = day(state.serverTime + 7*86400000);
+    syncDates(state.serverTime);
     render();
   } catch { $('#connection-warning').hidden = false; }
 }
@@ -229,7 +254,7 @@ function renderHealth() {
 }
 function renderActivity() {const root=$('#activity-list');root.replaceChildren();for(const e of state.events.slice(0,5)){const row=make('div','activity-item');row.append(make('p','',e.message),make('time','',fmt(Date.parse(e.at),true)));root.append(row);} }
 function renderExclusions(){const root=$('#exclusion-list');root.replaceChildren();for(const [i,e] of state.config.exclusions.entries()){const row=make('div','exclusion-entry');row.append(make('b','',e.date+' · '+(e.windowIds.length===5?'整天':e.windowIds.map(id=>state.windows.find(w=>w.id===id)?.start).join('、'))),make('span','',e.reason),button('移除',async()=>{await api('exclusions',{entries:state.config.exclusions.filter((_,n)=>n!==i)},'PUT');preview=null;await refresh();}));root.append(row);} }
-function updateClock(){if(!state)return;const now=Date.now()+offset;$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
+function updateClock(){if(!state)return;const now=Date.now()+offset;syncDates(now);$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
 function editAccount(a){const f=$('#account-form');f.reset();f.elements.id.value=a?.id||'';f.elements.username.value=a?.username||'';f.elements.username.readOnly=Boolean(a);f.elements.owner.value=a?.owner||'';f.elements.enabled.checked=a?a.enabled:state.accounts.filter(x=>x.enabled).length<5;f.elements.password.required=!a;f.elements.password.placeholder=a?'留空保留密码；输入后移开自动保存':'输入密码以添加账号';$('#account-dialog-title').textContent=a?'编辑账号 · 自动保存':'添加账号';$('#save-account-button').hidden=Boolean(a);$('#password-note').textContent=a?'使用人、密码及启用状态在修改后自动保存，无需确认。':'填写登录账号与密码后点击添加。最多同时启用5个账号。';$('#account-dialog').showModal();}
 function editField(name){const f=$('#account-form');if(!f.elements.id.value)return;const input={id:f.elements.id.value,username:f.elements.username.value};input[name]=name==='enabled'?f.elements.enabled.checked:f.elements[name].value;if(name==='password'&&!input.password)return;autosave('account-'+name,async()=>{await api('accounts',input);if(name==='password')f.elements.password.value='';},name==='password'?0:450);}
 $('#account-form').elements.owner.addEventListener('input',()=>editField('owner'));
@@ -243,7 +268,7 @@ for(const node of document.querySelectorAll('.nav'))node.addEventListener('click
 async function control(enabled){await window.cellStationFlush();if(enabled){controlPending=true;render();}try{await api('control',{enabled});toast(enabled?'调度已启动；实际任务准备时连接网站并登录':'调度已暂停');}finally{controlPending=false;await refresh();}}
 $('#control-button').addEventListener('click',()=>control(!(state.config.enabled||state.pendingStart||controlPending)).catch(e=>toast(e.message,true)));
 $('#cancel-start').addEventListener('click',()=>control(false).catch(e=>toast(e.message,true)));
-async function previewPlan(){try{preview=await api('simulate',{date:$('#plan-date').value});renderPlan();}catch(e){toast(e.message,true);}}
+async function previewPlan(){const date=$('#plan-date').value,request=++previewRequest;try{const result=await api('simulate',{date});if(request!==previewRequest||date!==$('#plan-date').value)return;preview=result;renderPlan();}catch(e){if(request===previewRequest)toast(e.message,true);}}
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
 for(const [id,key] of [['setting-autostart','autoStart'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
@@ -262,7 +287,7 @@ $('#run-healthcheck').addEventListener('click',async()=>{try{await api('healthch
 $('#test-notification').addEventListener('click',async()=>{try{toast((await api('desktop/test-notification',{})).message);}catch(e){toast(e.message,true);}});
 $('#quit-desktop').addEventListener('click',async()=>{try{await window.cellStationFlush();await api('desktop/quit',{});}catch(e){toast(e.message,true);}});
 $('#exclusion-form').addEventListener('submit',async e=>{e.preventDefault();const w=$('#exclusion-window').value;try{await api('exclusions',{entries:[...state.config.exclusions,{date:$('#exclusion-date').value,windowIds:w==='all'?state.windows.map(w=>w.id):[w],reason:$('#exclusion-reason').value||'临时跳过'}]},'PUT');preview=null;await refresh();toast('跳过规则已保存');}catch(e){toast(e.message,true);}});
-async function loadSummary(){if(summaryLoading||!state)return;summaryLoading=true;try{const r=await api('summary',{date:$('#summary-date').value});const stats=$('#summary-stats');stats.textContent=`成功 ${r.success} · 已存在 ${r.alreadyExists} · 失败 ${r.failed} · 待核对 ${r.uncertain} · 待执行 ${r.pending} · 跳过 ${r.skipped}`;const a=$('#summary-accounts'),rows=$('#summary-rows');a.replaceChildren();rows.replaceChildren();for(const x of r.byAccount){const tr=make('tr');tr.append(make('td','',identity(x)),make('td','',x.plannedMinutes/60),make('td','',x.confirmedHours));a.append(tr);}for(const x of [...r.rows].sort((a,b)=>b.start.localeCompare(a.start)||(a.equipmentOrder||0)-(b.equipmentOrder||0))){const tr=make('tr');tr.append(make('td','',x.start+'–'+x.end),make('td','',x.equipment?.equipmentName||'历史设备'),make('td','',identity(x)),make('td','status-'+x.status,labels[x.status]||x.status),make('td','',x.message));rows.append(tr);}}catch(e){toast(e.message,true);}finally{summaryLoading=false;}}
+async function loadSummary(){if(!state)return;const date=$('#summary-date').value,request=++summaryRequest;try{const r=await api('summary',{date});if(request!==summaryRequest||date!==$('#summary-date').value)return;const stats=$('#summary-stats');stats.textContent=`成功 ${r.success} · 已存在 ${r.alreadyExists} · 失败 ${r.failed} · 待核对 ${r.uncertain} · 待执行 ${r.pending} · 跳过 ${r.skipped}`;const a=$('#summary-accounts'),rows=$('#summary-rows');a.replaceChildren();rows.replaceChildren();for(const x of r.byAccount){const tr=make('tr');tr.append(make('td','',identity(x)),make('td','',x.plannedMinutes/60),make('td','',x.confirmedHours));a.append(tr);}for(const x of [...r.rows].sort((a,b)=>b.start.localeCompare(a.start)||(a.equipmentOrder||0)-(b.equipmentOrder||0))){const tr=make('tr');tr.append(make('td','',x.start+'–'+x.end),make('td','',x.equipment?.equipmentName||'历史设备'),make('td','',identity(x)),make('td','status-'+x.status,labels[x.status]||x.status),make('td','',x.message));rows.append(tr);}}catch(e){if(request===summaryRequest)toast(e.message,true);}}
 function exportResult(r){$('#last-export').textContent=(r.files||[r.file]).join('\n');toast('已导出至本机文件夹');}
 $('#refresh-summary').addEventListener('click',loadSummary);$('#summary-date').addEventListener('change',loadSummary);
 $('#export-summary').addEventListener('click',async()=>{try{exportResult(await api('summary/export',{date:$('#summary-date').value}));}catch(e){toast(e.message,true);}});
@@ -300,4 +325,6 @@ $('#confirm-restore').addEventListener('click',async()=>{
 });
 for(const [id,route] of [['open-exports','exports/open'],['open-booking-site','desktop/open-website']])$('#'+id).addEventListener('click',async()=>{try{await api(route,{});}catch(e){toast(e.message,true);}});
 function hashView(){const n=document.querySelector('.nav[data-view="'+location.hash.slice(1).replace(/[^a-z]/g,'')+'"]');if(n)n.click();}
+window.addEventListener('focus',()=>{if(state)syncDates();});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state)syncDates();});
 window.addEventListener('hashchange',hashView);hashView();refresh();setInterval(refresh,2000);setInterval(updateClock,100);

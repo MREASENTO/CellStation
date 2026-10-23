@@ -56,7 +56,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.2' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.3' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -214,7 +214,7 @@ async function createManager(options = {}) {
         return send(404, { error: '接口不存在' });
       }
       if (req.method !== 'GET') return send(405, { error: '不支持此操作' });
-      const assets = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/settings-v100.js': 'settings-v100.js', '/style.css': 'style.css' };
+      const assets = { '/': 'index.html', '/index.html': 'index.html', '/date-follow.js': 'date-follow.js', '/app.js': 'app.js', '/settings-v100.js': 'settings-v100.js', '/style.css': 'style.css' };
       const file = assets[url.pathname];
       if (!file) return send(404, { error: '页面不存在' });
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] });
