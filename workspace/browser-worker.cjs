@@ -38,13 +38,14 @@ class BrowserWorker {
     try {
       job?.onStep?.('browser_open', '无界面浏览器已启动');
       page = await context.newPage();
-      await page.goto('https://healthlab.zs-hospital.sh.cn/cf/main/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
+      const loginResponse=await page.goto('https://healthlab.zs-hospital.sh.cn/cf/main/login', { waitUntil: 'domcontentloaded', timeout: 45000 });
+      if(loginResponse?.status()>=500)throw new Error('服务器暂不可用，HTTP '+loginResponse.status());
       job?.onStep?.('login_page', '登录页面已加载');
       let credentials = await this.store.credentials(accountId, job?.runtime?.account);
       try {
         await automaticLogin(page, credentials.username, credentials.password, this.work, {
           onStep: job?.onStep, captchaRetries: (job?.runtime?.config || this.store.data.config).retryPolicy?.captchaRetries ?? 2,
-          deadline: job ? job.releaseAt + (job.runtime?.config || this.store.data.config).graceSeconds * 1000 : Date.now() + 90000,
+          deadline: job ? (job.recovery?.state==='running' ? Math.min(Date.now()+90000,Date.parse(`${job.date}T${job.start}:00+08:00`)-1) : job.releaseAt + (job.runtime?.config || this.store.data.config).graceSeconds * 1000) : Date.now() + 90000,
         });
       }
       finally { credentials.password = undefined; credentials = undefined; }

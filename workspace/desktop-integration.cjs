@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const FAILURE = new Set(['failed', 'needs_review', 'missed']);
 function reason(job) {
-  if (job.status === 'needs_review') return '保存结果不明确，请先到网站核对，程序不会重复提交。';
+  if (job.status === 'needs_review') return '保存结果不明确，5分钟后程序重新核对一次；仍不明确时可打开网页接管，不会重复提交。';
   if (job.status === 'missed') return '已超过执行时间，未补约。';
   const message = String(job.message || '');
   if (/验证码|OCR|登录|密码|账号/.test(message)) return '账号登录或验证码检查未通过。';

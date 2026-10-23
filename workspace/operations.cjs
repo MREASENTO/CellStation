@@ -139,15 +139,15 @@ class Operations {
       const list = rows.filter(row => row.accountId === id); const confirmed = list.filter(row => ['success', 'already_exists'].includes(row.status)).length;
       return { accountId: id, accountLabel: list[0].accountLabel, accountOwner: list[0].accountOwner || '', plannedMinutes: list.filter(row => !['skipped', 'disabled'].includes(row.status)).length * 30, confirmedMinutes: confirmed * 30, confirmedHours: confirmed / 2 };
     });
-    return { date, releaseDate: addDays(date, -7), generatedAt: new Date(this.clock()).toISOString(), planBasis: '计划按当前配置显示；历史结果保留实际执行记录', total: rows.length, success: count('success'), alreadyExists: count('already_exists'), failed: count('failed'), uncertain: count('needs_review'), missed: count('missed'), skipped: count('skipped'), disabled: count('disabled'), pending: rows.filter(row => !FINAL.has(row.status) && !['skipped', 'disabled'].includes(row.status)).length, rows, byAccount };
+    return { date, releaseDate: addDays(date, -7), generatedAt: new Date(this.clock()).toISOString(), planBasis: '计划按当前配置显示；历史结果保留实际执行记录', total: rows.length, success: count('success'), alreadyExists: count('already_exists'), failed: rows.filter(r=>r.status==='failed'&&!['waiting','running'].includes(r.recovery?.state)).length, recovering: rows.filter(r=>['waiting','running'].includes(r.recovery?.state)).length, uncertain: count('needs_review'), missed: count('missed'), skipped: count('skipped'), disabled: count('disabled'), pending: rows.filter(row => !FINAL.has(row.status) && !['skipped', 'disabled'].includes(row.status)).length, rows, byAccount };
   }
   exportSummary(date, automatic = false) {
     const report = this.summary(date);
     const suffix = automatic ? '' : `-${this.clock()}-${crypto.randomBytes(2).toString('hex')}`;
     const base = path.join(this.exports, `daily-${date}${suffix}`);
     fs.writeFileSync(base + '.json', JSON.stringify(report, null, 2));
-    const columns = ['设备名称', '目标日期', '开始', '结束', '账号', '使用人', '状态', '说明', '预约编号', '提交延迟ms', '保存调用时间', '网站读回确认时间', '开放到确认ms', '提交到确认ms', '步骤时间线JSON'];
-    const rows = report.rows.map(row => [row.equipment?.equipmentName, row.date, row.start, row.end, row.accountLabel, row.accountOwner || '', row.status, row.message, row.reservationId, row.delayMs, row.savingAt ? new Date(row.savingAt).toISOString() : '', row.verifiedAt || '', row.confirmationDelayMs, row.submissionToConfirmationMs, JSON.stringify(row.timeline || [])]);
+    const columns = ['设备名称', '目标日期', '开始', '结束', '账号', '使用人', '状态', '说明', '预约编号', '提交延迟ms', '保存调用时间', '网站读回确认时间', '开放到确认ms', '提交到确认ms', '步骤时间线JSON','复核确认时间','复核结果'];
+    const rows = report.rows.map(row => [row.equipment?.equipmentName, row.date, row.start, row.end, row.accountLabel, row.accountOwner || '', row.status, row.message, row.reservationId, row.delayMs, row.savingAt ? new Date(row.savingAt).toISOString() : '', row.verifiedAt || '', row.confirmationDelayMs, row.submissionToConfirmationMs, JSON.stringify(row.timeline || []), row.recheckedAt ? new Date(row.recheckedAt).toISOString() : '', row.review?.message || '']);
     fs.writeFileSync(base + '.csv', '\ufeff' + [columns, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n'), 'utf8');
     return { files: [base + '.json', base + '.csv'], summary: report };
   }
@@ -251,13 +251,15 @@ class Operations {
   monitorTick() {
     const now = this.clock(); if (now - this.lastTick > 90000 && !this.state.suspendedAt) this.resume(true); this.lastTick = now;
     const date = shanghaiDate(now); const end = Date.parse(date + 'T20:31:00+08:00');
-    if (now < end) return;
-    const jobs = Object.values(this.store.data.jobs).filter(job => shanghaiDate(job.releaseAt) === date);
-    if (!jobs.length) return;
-    const signature = JSON.stringify(jobs.map(job => [job.id, job.status, job.updatedAt]));
-    if (this.state.autoReports[date]?.signature === signature) return;
-    const report = this.exportSummary(addDays(date, 7), true); this.state.autoReports[date] = { at: now, files: report.files, signature }; this.persist();
-    this.store.event('summary', '当日预约汇总已自动导出JSON和CSV');
+    const dates=new Set(Object.keys(this.state.autoReports));if(now>=end)dates.add(date);
+    for(const reportDate of dates){
+      const jobs=Object.values(this.store.data.jobs).filter(job=>shanghaiDate(job.releaseAt)===reportDate);
+      if(!jobs.length)continue;
+      const signature=JSON.stringify(jobs.map(job=>[job.id,job.status,job.updatedAt,job.recheckedAt,job.review?.state,job.recovery?.state,job.recovery?.nextAt]));
+      if(this.state.autoReports[reportDate]?.signature===signature)continue;
+      const report=this.exportSummary(addDays(reportDate,7),true);this.state.autoReports[reportDate]={at:now,files:report.files,signature};this.persist();
+      this.store.event('summary',reportDate+' 对应预约汇总已更新JSON和CSV');
+    }
   }
   maintainFiles() {
     const now = this.clock(), policy = this.store.data.config.retentionPolicy;
