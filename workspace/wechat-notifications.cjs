@@ -1,6 +1,25 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
 const GOOD = new Set(['success','already_exists']), BAD = new Set(['failed','needs_review','missed']);
+const reviewTime = value => Number.isFinite(value)?new Date(value+8*3600000).toISOString().slice(0,23).replace('T',' '):'未记录';
+function reviewNotice(job) {
+  const review=job.review;
+  if(job.status!=='needs_review'||review?.protocol!==2)return {key:job.id+'|'+job.status,kind:'ordinary'};
+  const key=`${job.id}|needs_review|${review.cycleId||'review-v2'}|${review.notice}`;
+  if(review.state==='waiting'&&review.stage==='delayed'&&review.notice==='retry_scheduled')return {
+    key,kind:'retry_scheduled',title:'CellStation · 首次复核未确认，已安排重查',
+    banner:'【首次复核未确认 · 程序还会再次复核】',
+    summary:'首次复核未确认，程序将按设置间隔再次查询，尚未要求你自主复核。',
+    instructions:[`再次复核时间：${reviewTime(review.nextAt)}（北京时间）`,`当前复核间隔：${review.intervalMinutes}分钟`,'调度运行时程序将再次查询；如果再次复核仍未确认，会另发【请自主复核】提醒。不会重复提交预约。']
+  };
+  if(review.state==='failed'&&review.manualRequired&&review.notice==='manual_required')return {
+    key,kind:'manual_required',title:'【请自主复核】CellStation · 两轮复核仍未确认',
+    banner:'【需要你亲自处理：请自主复核】',
+    summary:'两轮复核仍未确认，已停止自动复核。请你打开原账号网页自主复核；请勿直接重复预约。',
+    instructions:['请你现在打开本机CellStation → 执行记录 →“打开网页核对”，亲自登录原账号自主复核。','程序已停止自动复核；确认网站记录前，请勿直接重复预约。',`首次复核时间：${reviewTime(review.firstCheckedAt)}`,`再次复核时间：${reviewTime(review.delayedCheckedAt)}`]
+  };
+  return null;
+}
 class WechatNotifications {
   constructor(directory, vault, request = fetch) {
     fs.mkdirSync(directory,{recursive:true});
@@ -20,11 +39,12 @@ class WechatNotifications {
   }
   enqueue(job){
     if(!this.data.enabled||!((GOOD.has(job.status)&&this.data.success)||(BAD.has(job.status)&&this.data.failure)))return;
-    const key=job.id+'|'+job.status;
+    const notice=reviewNotice(job);if(!notice)return;
+    const key=notice.key;
     if(this.data.sent.includes(key)||this.pending.has(key))return;
     this.pending.add(key);
-    const good=GOOD.has(job.status), title=`CellStation · ${good?'预约成功':job.status==='needs_review'?'请及时核对':'预约未完成'}`;
-    const message=[`目标日期：${job.date}`,`时间：${job.start}–${job.end}`,`设备：${job.equipment?.equipmentName||'设备'}`,`使用人：${job.accountOwner||job.accountLabel||'未备注'}`,`结果：${job.message||job.status}`,job.verifiedAt?`网站确认：${job.verifiedAt}`:'',good?'':'请打开本机CellStation查看执行记录及失败截图。'].filter(Boolean).join('\n');
+    const good=GOOD.has(job.status), title=notice.title||`CellStation · ${good?'预约成功':job.status==='needs_review'?'请及时核对':'预约未完成'}`;
+    const message=[notice.banner,...(notice.instructions||[]),`目标日期：${job.date}`,`时间：${job.start}–${job.end}`,`设备：${job.equipment?.equipmentName||'设备'}`,`使用人：${job.accountOwner||job.accountLabel||'未备注'}`,`结果：${notice.kind==='ordinary'?job.message||job.status:job.review.message}`,job.verifiedAt?`网站确认：${job.verifiedAt}`:'',!good&&notice.kind==='ordinary'?'请打开本机CellStation查看执行记录及失败截图。':''].filter(Boolean).join('\n');
     this.queue=this.queue.then(async()=>{try{await this.send(title,message);this.data.sent.push(key);this.data.sent=this.data.sent.slice(-2000);this.data.lastSentAt=new Date().toISOString();this.error='';this.persist();}catch{this.error='微信推送失败，请检查网络、密钥、通道绑定及服务额度；预约结果已保留在本机。';}finally{this.pending.delete(key);}});
   }
   async send(title,content){
@@ -42,4 +62,4 @@ class WechatNotifications {
   async test(){await this.send('CellStation · 微信通知测试','这是一条连接测试消息，未执行预约。收到后即可开启成功和失败提醒。');this.error='';this.data.lastSentAt=new Date().toISOString();this.persist();return {sent:true,message:'推送服务已接收测试消息，请在微信确认收到；服务接收不等于手机已送达。'};}
   async idle(){await this.queue;}
 }
-module.exports={WechatNotifications};
+module.exports={WechatNotifications,reviewNotice};

@@ -1,6 +1,6 @@
 {
   "name": "cellstation-booking",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "description": "Local Windows cell station reservation manager",
   "engines": {

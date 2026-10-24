@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { automaticLogin } = require('./auto-login.cjs');
 const { openEquipment, ensureWeek, calendarComponents } = require('./reservation.cjs');
 const { rulesFor } = require('./equipment.cjs');
@@ -20,7 +21,12 @@ class Reviews {
     Object.assign(this, { store, root, clock, canRun, login, open, week, components });
     this.launch = launch || (options => require('playwright').chromium.launch(options));
     this.sessions = new Map(); this.pending = new Map(); this.closed = false;
-    for(const job of Object.values(store.data.jobs))if(job.review?.state==='checking')store.job(job,{review:{...job.review,state:'failed',checkedAt:clock(),message:'核对失败：上次核对被程序退出中断，已停止自动核对；可手动重试。'}});
+    for(const job of Object.values(store.data.jobs)) {
+      if(job.status!=='needs_review')continue;
+      if(job.review?.protocol===2&&job.review.state==='checking')store.job(job,{review:{...job.review,state:'waiting',nextAt:clock(),message:'上次复核中断，恢复未完成的查询轮次；不会重复提交预约。'}});
+      this.observe(this.store.data.jobs[job.id]);
+    }
+    this.reschedule();
   }
   get active() { return this.sessions.size + this.pending.size; }
   isAccountBusy(accountId) { return [...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
@@ -33,19 +39,46 @@ class Reviews {
     reviewPlan(job);
     return { job: structuredClone(job), account: structuredClone(account), rules: rulesFor(job.equipment) };
   }
-  start() { this.timer = setInterval(() => this.tick().catch(() => {}),1000); this.timer.unref?.(); }
-  async tick() {
-    if (this.closed || !this.store.data.config.enabled) return;
-    for (const job of Object.values(this.store.data.jobs)) {
-      if (job.status !== 'needs_review') continue;
-      if (!job.review) {
-        this.store.job(job,{ review: { state:'waiting', nextAt:this.clock()+INTERVAL, automatic:true, attempts:0 } });
-        continue;
-      }
-      if (job.review.state === 'waiting' && job.review.nextAt <= this.clock() && !this.pending.size && ![...this.sessions.values()].some(e=>e.accountId===job.accountId) && this.canRun(job)) {
-        try{await this.recheck(job.id,true);}catch(error){this.store.job(job,{review:{...job.review,state:'failed',checkedAt:this.clock(),message:'核对失败：'+safeError(error)+'；已停止自动核对。'}});}
-      }
+  intervalMs() { return (this.store.data.config.reviewPolicy?.retryIntervalMinutes||5)*60000; }
+  observe(job) {
+    job=this.store.data.jobs[job.id]||job;
+    if(job.status!=='needs_review'||job.review?.protocol===2)return job;
+    const history=job.review?.checkedAt?[{stage:'legacy',checkedAt:job.review.checkedAt,message:job.review.message||'旧版复核记录'}]:[];
+    const record=this.store.job(job,{review:{protocol:2,cycleId:randomUUID(),state:'waiting',stage:'immediate',nextAt:this.clock(),automatic:true,autoAttempts:0,attempts:job.review?.attempts||0,history,message:'等待立即复核；查询原账号、原设备和原时段，不会再次提交预约。'}});
+    this.nudge();return record;
+  }
+  nudge() { if(this.started&&!this.nudgePending){this.nudgePending=true;queueMicrotask(()=>{this.nudgePending=false;this.tick().catch(()=>{});});} }
+  reschedule() {
+    for(const job of Object.values(this.store.data.jobs))if(job.status==='needs_review'&&job.review?.protocol===2&&job.review.state==='waiting'&&job.review.stage==='delayed') {
+      const nextAt=job.review.scheduledFrom+this.intervalMs();
+      if(nextAt!==job.review.nextAt)this.store.job(job,{review:{...job.review,nextAt,intervalMinutes:this.intervalMs()/60000,message:`首次复核未确认；已按当前设置安排再次复核，间隔${this.intervalMs()/60000}分钟。`}});
     }
+    this.nudge();
+  }
+  start() { this.started=true;this.timer = setInterval(() => this.tick().catch(() => {}),1000); this.timer.unref?.();this.nudge(); }
+  async tick() {
+    if (this.ticking || this.closed || !this.store.data.config.enabled) return;
+    this.ticking=true;
+    try { for (const item of Object.values(this.store.data.jobs)) {
+      if (item.status !== 'needs_review') continue;
+      const job=this.observe(item);
+      if (job.review.state === 'waiting' && job.review.nextAt <= this.clock() && !this.pending.size && ![...this.sessions.values()].some(e=>e.accountId===job.accountId) && this.canRun(job)) {
+        try{await this.recheck(job.id,true);}catch(error){const stage=job.review.autoAttempts?'delayed':'immediate';this.finish(job,null,safeError(error),true,stage,this.clock(),'error');}
+      }
+    }} finally { this.ticking=false; }
+  }
+  finish(job,match,detail,automatic,stage,startedAt,outcome='not_found') {
+    const base=job.review||{},inFlow=job.status==='needs_review'&&base.protocol===2,checkedAt=this.clock();
+    const autoAttempts=inFlow?Math.max(base.autoAttempts||0,stage==='immediate'?1:stage==='delayed'?2:0):0;
+    const waiting=inFlow&&!match&&autoAttempts<2,manualRequired=inFlow&&!match&&!waiting;
+    const message=match?'复核已查到原账号、原设备、同时段及备注匹配的预约，未再次提交。':waiting?`首次复核未确认：${detail}；将在${this.intervalMs()/60000}分钟后再次复核。` :manualRequired?`再次复核失败：${detail}。已停止自动复核，请你自主复核。`:`本次复核未确认：${detail}；可手动再查或打开网页。`;
+    const history=[...(base.history||[]),{stage,automatic,startedAt,checkedAt,durationMs:checkedAt-startedAt,outcome:match?'verified':outcome,message}].slice(-30);
+    const review={...base,state:match?'verified':waiting?'waiting':'failed',stage:waiting?'delayed':'finished',automatic,attempts:(base.attempts||0)+1,autoAttempts,manualRequired,notice:waiting?'retry_scheduled':manualRequired?'manual_required':undefined,startedAt,checkedAt,durationMs:checkedAt-startedAt,history,message,nextAt:waiting?checkedAt+this.intervalMs():null};
+    if(stage==='immediate')review.firstCheckedAt=checkedAt;
+    if(stage==='delayed')review.delayedCheckedAt=checkedAt;
+    if(waiting)Object.assign(review,{scheduledFrom:checkedAt,intervalMinutes:this.intervalMs()/60000});
+    this.store.job(job,match?{status:'already_exists',reservationId:match.id,review,recheckedAt:checkedAt,message}:{review});
+    return {verified:Boolean(match),manualRequired,message};
   }
   run(id, action) {
     if (this.closed) return Promise.reject(new Error('程序正在退出'));
@@ -72,12 +105,15 @@ class Reviews {
   }
   async recheck(id, automatic = false) {
     return this.run(id,async()=>{
+      const current=this.store.data.jobs[id];if(current)this.observe(current);
       const target = this.target(id), { job } = target;
       if (['success','already_exists'].includes(job.status)) return {verified:true,message:'该预约已经确认，无需再次核对'};
+      if(automatic&&(job.review?.autoAttempts||0)>=2)return {verified:false,manualRequired:true,message:'两轮自动复核已结束，请自主复核。'};
       if (!this.canRun(job)) throw new Error('该账号正在准备或执行预约，请稍后核对');
       if (this.sessions.has(id)) throw new Error('该记录的核对网页已打开，请关闭后再由程序核对');
       const startedAt = this.clock();
-      this.store.job(job,{review:{state:'checking',startedAt,automatic,attempts:(job.review?.attempts||0)+1}});
+      const stage=job.review?.protocol===2&&job.status==='needs_review'?job.review.autoAttempts===0?'immediate':job.review.autoAttempts===1?'delayed':'manual':'manual';
+      this.store.job(job,{review:{...job.review,state:'checking',startedAt,automatic,inFlightStage:stage}});
       try {
         const entry = await this.session(target,false), page=entry.page, plan=reviewPlan(job);
         const href=await page.locator('a.user').getAttribute('href');
@@ -85,16 +121,11 @@ class Reviews {
         const rows=await this.components(page,plan.weekStart);
         const remark=job.remark||target.rules.remark;
         const match=rows.find(row=>String(row.content||'').includes(remark)&&assessComponents([row],plan,userId).duplicate);
-        const checkedAt=this.clock(),review={state:match?'verified':'failed',automatic,attempts:(job.review?.attempts||0)+1,startedAt,checkedAt,durationMs:checkedAt-startedAt};
-        const message=match?'复核已查到原账号、原设备、同时段及备注匹配的预约，未再次提交。':'核对失败：未查到匹配预约，已停止自动核对；可打开网页继续确认。未重复提交。';
-        review.message=message;
-        this.store.job(job,match?{status:'already_exists',reservationId:match.id,review,recheckedAt:checkedAt,message}:{review});
-        return {verified:Boolean(match),message};
+        return this.finish(job,match,'未查到匹配预约',automatic,stage,startedAt);
       } catch(error) {
-        const message='核对失败：'+safeError(error)+'；已停止自动核对，可手动重试或打开网页。';
         const diagnosticId=await captureFailure(this.root,job,'recheck',error,this.sessions.get(id)?.page).catch(()=>undefined);
-        this.store.job(job,{...(diagnosticId?{diagnosticId}:{}),review:{state:'failed',automatic,attempts:(job.review?.attempts||0)+1,startedAt,checkedAt:this.clock(),message}});
-        return {verified:false,message};
+        if(diagnosticId)this.store.job(job,{diagnosticId});
+        return this.finish(job,null,safeError(error),automatic,stage,startedAt,'error');
       } finally {
         const entry=this.sessions.get(id);this.sessions.delete(id);await entry?.browser.close().catch(()=>{});
       }

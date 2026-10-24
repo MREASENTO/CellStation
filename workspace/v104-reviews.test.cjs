@@ -17,16 +17,16 @@ test('recheck uses the historical account/equipment even when disabled or reassi
  try{const result=await f.controller.recheck(f.job.id);assert.ok(result.verified);assert.deepEqual(f.users,[['original','test-only']]);assert.equal(f.launches[0].headless,true);const saved=f.store.data.jobs.record;assert.equal(saved.status,'already_exists');assert.equal(saved.reservationId,88);assert.equal(saved.recheckedAt,f.clock());assert.equal(saved.savingAt,100);assert.equal(saved.confirmedAt,undefined);assert.equal(saved.timeline.length,1);assert.equal(f.controller.active,0);assert.equal(JSON.stringify(saved).includes('test-only'),false);}finally{await f.controller.close();}
 });
 test('other account, device calendar input, wrong time or remark cannot confirm a reservation',async()=>{
- for(const change of [{user:70},{start:1},{end:2},{remark:'other'}]){const f=await fixture();f.rows([component(f.job,change)]);try{assert.equal((await f.controller.recheck('record')).verified,false);assert.equal(f.store.data.jobs.record.status,'needs_review');assert.equal(f.store.data.jobs.record.review.state,'failed');assert.equal(f.store.data.jobs.record.message,'原始保存不明确');}finally{await f.controller.close();}}
+ for(const change of [{user:70},{start:1},{end:2},{remark:'other'}]){const f=await fixture();f.rows([component(f.job,change)]);try{assert.equal((await f.controller.recheck('record')).verified,false);assert.equal(f.store.data.jobs.record.status,'needs_review');assert.equal(f.store.data.jobs.record.review.state,'waiting');assert.equal(f.store.data.jobs.record.review.stage,'delayed');assert.equal((await f.controller.recheck('record')).verified,false);assert.equal(f.store.data.jobs.record.review.state,'failed');assert.equal(f.store.data.jobs.record.review.manualRequired,true);assert.equal(f.store.data.jobs.record.message,'原始保存不明确');}finally{await f.controller.close();}}
 });
-test('automatic review waits five minutes, runs once, and keeps a failed review stopped through reload',async()=>{
+test('automatic review runs immediately, then once after five minutes, and remains stopped through reload',async()=>{
  const f=await fixture();f.store.data.config.enabled=true;await f.controller.tick();const due=f.store.data.jobs.record.review.nextAt;assert.equal(due,f.clock()+INTERVAL);
- f.time(due-1);await f.controller.tick();assert.equal(f.users.length,0);f.time(due);await f.controller.tick();assert.equal(f.users.length,1);assert.equal(f.store.data.jobs.record.review.state,'failed');
- f.time(due+INTERVAL*5);await f.controller.tick();assert.equal(f.users.length,1);const reloaded=new ManagerStore(f.root,f.store.vault);assert.equal(reloaded.data.jobs.record.review.state,'failed');await f.controller.close();
+ f.time(due-1);await f.controller.tick();assert.equal(f.users.length,1);f.time(due);await f.controller.tick();assert.equal(f.users.length,2);assert.equal(f.store.data.jobs.record.review.state,'failed');
+ f.time(due+INTERVAL*5);await f.controller.tick();assert.equal(f.users.length,2);const reloaded=new ManagerStore(f.root,f.store.vault);assert.equal(reloaded.data.jobs.record.review.state,'failed');await f.controller.close();
 });
 test('automatic review respects pause, login failure stops once, and a manual retry can later confirm',async()=>{
- const f=await fixture();f.store.data.config.enabled=true;await f.controller.tick();f.time(f.clock()+INTERVAL);f.store.data.config.enabled=false;await f.controller.tick();assert.equal(f.users.length,0);
- f.store.data.config.enabled=true;f.failure(true);await f.controller.tick();assert.equal(f.users.length,1);assert.equal(f.store.data.jobs.record.review.state,'failed');await f.controller.tick();assert.equal(f.users.length,1);
+ const f=await fixture();f.store.data.config.enabled=true;await f.controller.tick();f.time(f.clock()+INTERVAL);f.store.data.config.enabled=false;await f.controller.tick();assert.equal(f.users.length,1);
+ f.store.data.config.enabled=true;f.failure(true);await f.controller.tick();assert.equal(f.users.length,2);assert.equal(f.store.data.jobs.record.review.state,'failed');await f.controller.tick();assert.equal(f.users.length,2);
  f.failure(false);f.rows([component(f.job)]);assert.ok((await f.controller.recheck('record')).verified);await f.controller.close();
 });
 test('manual web entry is headed, preserves the account, reuses its window, and survives login failure for handoff',async()=>{
@@ -43,8 +43,8 @@ test('review API requires CSRF and accepts a job id rather than client credentia
  try{const state=await fetch(app.url+'/api/state').then(r=>r.json());const send=(route,token)=>fetch(app.url+'/api/reviews/'+route,{method:'POST',headers:{'Content-Type':'application/json',...(token?{'X-CSRF-Token':token}:{})},body:JSON.stringify({jobId:'original-record'})});assert.equal((await send('open')).status,403);assert.equal((await send('recheck',state.csrfToken)).status,200);assert.equal((await send('open',state.csrfToken)).status,200);assert.deepEqual(seen,['original-record','original-record']);}finally{await app.close();}
 });
 test('interrupted or missing-account automatic reviews stop visibly and do not loop',async()=>{
- const f=await fixture();f.store.job(f.job,{review:{state:'checking',attempts:1}});await f.controller.close();const other=new Reviews(f.store,f.root);assert.equal(f.store.data.jobs.record.review.state,'failed');await other.close();
- const g=await fixture();g.store.data.config.enabled=true;await g.controller.tick();g.time(g.clock()+INTERVAL);g.store.data.accounts=g.store.data.accounts.filter(a=>a.id!==g.a.id);await g.controller.tick();assert.equal(g.store.data.jobs.record.review.state,'failed');await g.controller.tick();assert.equal(g.users.length,0);await g.controller.close();
+ const f=await fixture();f.store.job(f.job,{review:{state:'checking',attempts:1}});await f.controller.close();const other=new Reviews(f.store,f.root);assert.equal(f.store.data.jobs.record.review.state,'waiting');assert.equal(f.store.data.jobs.record.review.stage,'immediate');await other.close();
+ const g=await fixture();g.store.data.config.enabled=true;await g.controller.tick();g.time(g.clock()+INTERVAL);g.store.data.accounts=g.store.data.accounts.filter(a=>a.id!==g.a.id);await g.controller.tick();assert.equal(g.store.data.jobs.record.review.state,'failed');await g.controller.tick();assert.equal(g.users.length,1);await g.controller.close();
 });
 test('rechecking an older day refreshes its existing daily export and records a separate review timestamp',async()=>{
  const {Operations}=require('./operations.cjs'),f=await fixture();const releaseDay=f.job.releaseAt;

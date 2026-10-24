@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { WINDOWS, windowsFor, validateDateWindows, validDate, addDays, shanghaiDate, defaults, validateWindows, validateSelection, validateSchedules, shuffleAssignments, validateExclusions, validateRetryPolicy } = require('./schedule-logic.cjs');
+const { WINDOWS, windowsFor, validateDateWindows, validDate, addDays, shanghaiDate, defaults, validateWindows, validateSelection, validateSchedules, shuffleAssignments, validateExclusions, validateRetryPolicy, validateReviewPolicy } = require('./schedule-logic.cjs');
 class ManagerStore {
   constructor(directory, vault = require('./vault.cjs')) {
     fs.mkdirSync(directory, { recursive: true });
@@ -34,6 +34,7 @@ class ManagerStore {
     this.data.assignmentRevision ||= 0;
     this.data.config.retentionPolicy = require('./retention.cjs').validateRetention({ ...require('./retention.cjs').defaults, ...this.data.config.retentionPolicy });
     this.data.config.exclusions ||= [];
+    this.data.config.reviewPolicy=validateReviewPolicy({...defaults().reviewPolicy,...this.data.config.reviewPolicy});
     this.data.config.retryPolicy = validateRetryPolicy({ ...defaults().retryPolicy, ...this.data.config.retryPolicy });
     // A crash after entering saving may have created a booking. Never silently resubmit.
     for (const job of Object.values(this.data.jobs)) {
@@ -207,6 +208,7 @@ class ManagerStore {
     this.data.config.retentionPolicy = require('./retention.cjs').validateRetention(policy);
     this.event('config', `截图与文件日志保留规则已保存：${policy.enabled ? `${policy.compressAfterDays}天压缩、${policy.deleteAfterDays}天清理` : '自动维护已关闭'}`);
   }
+  setReviewPolicy(policy) { this.data.config.reviewPolicy=validateReviewPolicy(policy);this.event('config',`再次复核间隔已保存：${policy.retryIntervalMinutes}分钟`); }
   setRetryPolicy(policy) {
     this.data.config.retryPolicy = validateRetryPolicy(policy);
     this.event('config', `重试次数已保存：预约失败${policy.taskRetries}次，验证码刷新${policy.captchaRetries}次（均不含首次）`);
