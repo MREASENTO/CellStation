@@ -205,8 +205,8 @@ class Scheduler {
       if (!uncertain && !this.store.data.config.enabled) { this.store.job(job, { status: 'queued', recovery:this.pausedRecovery(job), message: '调度已暂停，保存未执行' }); return; }
       if (!uncertain && this.retry(job, error, 'commit')) return;
       if (!uncertain && this.deferRecovery(job,error,'commit')) return;
-      this.store.job(job, { status: uncertain ? 'needs_review' : 'failed', recovery:this.finishedRecovery(job,'stopped'), diagnosticId: error.diagnosticId, message: uncertain ? `保存结果需核对，不会自动重试。${String(error.message).slice(0, 650)}` : String(error.message).slice(0, 800) });
-      this.store.event('error', `${job.date} ${job.start} · ${job.accountLabel} · ${uncertain ? '保存结果需人工核对' : '执行未完成'}`);
+      this.store.job(job, { status: uncertain ? 'needs_review' : 'failed', recovery:this.finishedRecovery(job,'stopped'), diagnosticId: error.diagnosticId, message: uncertain ? `保存结果需复核，程序将立即查询并按设置间隔再查一次，不重复提交预约。${String(error.message).slice(0, 650)}` : String(error.message).slice(0, 800) });
+      this.store.event('error', `${job.date} ${job.start} · ${job.accountLabel} · ${uncertain ? '保存结果需复核，程序将立即查询' : '执行未完成'}`);
     } finally { this.prepared.delete(job.id); await this.worker.releaseSession?.(job.accountId, job.id); }
   }
   retry(job, error, phase) {

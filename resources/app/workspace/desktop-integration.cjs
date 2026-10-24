@@ -1,9 +1,10 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { reviewNotice } = require('./wechat-notifications.cjs');
 const FAILURE = new Set(['failed', 'needs_review', 'missed']);
 function reason(job) {
-  if (job.status === 'needs_review') return '保存结果不明确，5分钟后程序重新核对一次；仍不明确时可打开网页接管，不会重复提交。';
+  if (job.status === 'needs_review') return reviewNotice(job)?.summary||'保存结果不明确，程序将立即复核，并按设置间隔再查一次；不会重复提交。';
   if (job.status === 'missed') return '已超过执行时间，未补约。';
   const message = String(job.message || '');
   if (/验证码|OCR|登录|密码|账号/.test(message)) return '账号登录或验证码检查未通过。';
@@ -56,20 +57,22 @@ class DesktopIntegration {
   shouldResume(autoStarted) { return Boolean(autoStarted && this.settings.resumeSchedule && this.settings.lastSchedulerEnabled); }
   notify(job) {
     if (!FAILURE.has(job.status)) return;
-    const key = `${job.id}|${job.status}`;
+    const notice=reviewNotice(job);if(!notice)return;
+    const key = notice.key;
     if (key in this.settings.notifiedJobs) return;
     this.settings.notifiedJobs[key] = this.clock();
     this.settings.notifiedJobs = Object.fromEntries(Object.entries(this.settings.notifiedJobs).slice(-500));
     this.persist();
     if (!this.settings.failureNotifications) return;
-    this.pending.push({ date: job.date, start: job.start, end: job.end, accountLabel: String(job.accountOwner || job.accountLabel || '未备注使用人').slice(0, 70), status: job.status, reason: reason(job) });
+    this.pending.push({ date: job.date, start: job.start, end: job.end, accountLabel: String(job.accountOwner || job.accountLabel || '未备注使用人').slice(0, 70), status: job.status, kind:notice.kind, title:notice.title, reason: reason(job) });
     if (!this.timer) this.timer = setTimeout(() => { this.timer = null; this.flush(); }, this.batchMs);
   }
   flush() {
     const list = this.pending.splice(0);
     if (!list.length || !this.settings.failureNotifications) return;
+    list.sort((a,b)=>Number(b.kind==='manual_required')-Number(a.kind==='manual_required'));
     const first = list[0];
-    const title = list.length > 1 ? `CellStation · ${list.length}项预约需处理` : first.status === 'needs_review' ? 'CellStation · 预约结果需核对' : first.status === 'missed' ? 'CellStation · 已错过预约' : 'CellStation · 预约失败';
+    const title = first.kind==='manual_required'?(list.length>1?`【请自主复核】CellStation · ${list.filter(j=>j.kind==='manual_required').length}项需你亲自确认`:first.title):list.length > 1 ? `CellStation · ${list.length}项预约需处理` : first.title|| (first.status === 'needs_review' ? 'CellStation · 预约结果需核对' : first.status === 'missed' ? 'CellStation · 已错过预约' : 'CellStation · 预约失败');
     const content = list.slice(0, 3).map(job => `${job.date} ${job.start}–${job.end} · ${job.accountLabel}\n${job.reason}`).join('\n') + (list.length > 3 ? `\n另有${list.length - 3}项，请查看执行记录。` : '');
     try { this.sendNotification({ title, content: content.slice(0, 240), click: () => this.show('history') }); }
     catch (error) { console.error('WINDOWS_NOTIFICATION_FAILED', error.message); }

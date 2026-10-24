@@ -15,6 +15,11 @@ function validateRetryPolicy(policy) {
   if (!policy || typeof policy !== 'object' || Array.isArray(policy) || Object.keys(policy).some(key => !['taskRetries', 'captchaRetries'].includes(key)) || !['taskRetries', 'captchaRetries'].every(key => Number.isInteger(policy[key]) && policy[key] >= 0 && policy[key] <= 20)) throw new Error('重试次数需为0至20的整数');
   return { taskRetries: policy.taskRetries, captchaRetries: policy.captchaRetries };
 }
+function validateReviewPolicy(policy) {
+  const value=policy?.retryIntervalMinutes;
+  if(!policy||typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(k=>k!=='retryIntervalMinutes')||!Number.isSafeInteger(value)||value<1||!Number.isSafeInteger(value*60000)||!Number.isFinite(new Date(Date.now()+value*60000).getTime()))throw new Error('再次复核间隔需为正整数分钟');
+  return {retryIntervalMinutes:value};
+}
 function validDate(date) { return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date + 'T00:00:00+08:00')) && shanghaiDate(Date.parse(date + 'T00:00:00+08:00')) === date; }
 function validateExclusions(entries) {
   if (!Array.isArray(entries) || entries.length > 366) throw new Error('最多保存366条日期例外');
@@ -85,7 +90,7 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
   return jobs.sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
 }
 function defaults() {
-  return { enabled: false, enabledAt: null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], retryPolicy: { taskRetries: 2, captchaRetries: 2 },
+  return { enabled: false, enabledAt: null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
     equipment: require('./equipment.cjs').defaultEquipment(), theme: 'system', windows: WINDOWS.map(w => ({ id: w.id, enabled: true })) };
 }
 function shuffleAssignments(config, accounts, locked = {}, randomInt = require('node:crypto').randomInt) {
@@ -100,4 +105,4 @@ function shuffleAssignments(config, accounts, locked = {}, randomInt = require('
   for (const window of enabled.filter(w => !mapping[w.id])) mapping[window.id] = candidates.shift() || null;
   return mapping;
 }
-module.exports = { WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy };
+module.exports = { WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy, validateReviewPolicy };

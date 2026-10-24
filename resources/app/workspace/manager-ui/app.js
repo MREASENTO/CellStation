@@ -7,7 +7,7 @@ const identity = a => a.accountOwner || a.owner || a.username || a.accountLabel 
 const labels = { queued:'等待准备', preparing:'登录准备中', ready:'等待开放', saving:'正在保存', success:'预约成功', already_exists:'已存在', failed:'执行失败', needs_review:'需核对', missed:'已错过', retrying:'等待重试', skipped:'已跳过', disabled:'未分配', planned:'计划中' };
 const reviewBusy = new Set();
 const needsAction = j => ['needs_review','failed','missed'].includes(j.status);
-const jobLabel = j => j.status==='needs_review' ? ({waiting:'待自动核对',checking:'正在核对',failed:'核对失败'}[j.review?.state]||'需核对') : ['waiting','running'].includes(j.recovery?.state) ? (j.recovery.state==='waiting'?'等待网站恢复':'恢复预约中') : labels[j.status]||j.status;
+const jobLabel = j => j.status==='needs_review'&&j.review?.protocol===2 ? j.review.manualRequired?'请自主复核':j.review.state==='checking'?(j.review.stage==='delayed'?'再次复核中':'首次复核中'):j.review.stage==='delayed'?'等待再次复核':'等待立即复核' : j.status==='needs_review' ? ({waiting:'待自动核对',checking:'正在核对',failed:'核对失败'}[j.review?.state]||'需核对') : ['waiting','running'].includes(j.recovery?.state) ? (j.recovery.state==='waiting'?'等待网站恢复':'恢复预约中') : labels[j.status]||j.status;
 const jobTone = j => j.status==='needs_review'||['waiting','running'].includes(j.recovery?.state)?'review':['success','already_exists'].includes(j.status)?'good':['failed','missed'].includes(j.status)?'bad':'muted';
 function reviewActions(job) {
   const root=make('span','review-actions');root.dataset.jobId=job.id;
@@ -16,7 +16,7 @@ function reviewActions(job) {
     const action=button(text,async()=>{
       if(reviewBusy.has(job.id))return;reviewBusy.add(job.id);action.textContent=mode==='recheck'?'正在核对…':'正在登录…';
       try{const result=await api('reviews/'+mode,{jobId:job.id});toast(result.message,false,result.verified||result.ready?'':'review');}
-      finally{reviewBusy.delete(job.id);await refresh();if(view==='reports')loadSummary();}
+      finally{reviewBusy.delete(job.id);action.textContent=text;await refresh();if(view==='reports')loadSummary();}
     });
     action.disabled=reviewBusy.has(job.id)||job.review?.state==='checking';root.append(action);
   }
@@ -109,10 +109,11 @@ function renderSettings() {
   if(!dirty.has('theme')) $('#setting-theme').value=state.config.theme || 'system'; theme();
   if(!dirty.has('retention')){const policy=state.config.retentionPolicy;$('#setting-retention-enabled').checked=policy.enabled;$('#setting-compress-days').value=policy.compressAfterDays;$('#setting-delete-days').value=policy.deleteAfterDays;}
   const maintenance=state.operations?.retention;$('#retention-status').textContent=maintenance?maintenance.error?'上次维护未完成：'+maintenance.error:`上次维护 ${fmt(maintenance.at,true)} · 压缩 ${maintenance.compressed||0} 项 · 清理 ${maintenance.deleted||0} 项；后台维护避开临近预约时段。`:'默认7天压缩、30天清理；后台低优先级维护，避开临近预约时段。';
+  if(!dirty.has('review-policy'))$('#setting-review-interval').value=state.config.reviewPolicy.retryIntervalMinutes;
   if(!dirty.has('retry')) { $('#setting-task-retries').value=state.config.retryPolicy.taskRetries; $('#setting-captcha-retries').value=state.config.retryPolicy.captchaRetries; }
   $('#startup-status').textContent=d?.startupBlocked?'启动项已被Windows禁用':d?.autoStart?'已启用 · 当前Windows用户':'已关闭';
-  $('#retry-policy-note').textContent='修改后自动保存；当前任务沿用开始时的次数，后续任务使用新设置。0表示首次失败后不重试。';
-  $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时停止重试。`;
+  $('#retry-policy-note').textContent='修改后自动保存；当前任务沿用开始时的次数，后续任务使用新设置。0表示关闭短间隔重试；网站恢复重试另按5分钟执行。';
+  $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时立即复核，未确认则间隔${state.config.reviewPolicy.retryIntervalMinutes}分钟再查一次；仍未确认将明确提醒你自主复核，不会重复提交。`;
 }
 let accountsSignature;
 function renderAccounts() {
@@ -237,9 +238,10 @@ function renderHistory() {
   for(const j of state.jobs) {
     const row=make('tr'),time=make('td');time.append(make('strong','',j.date+' '+j.start+'–'+j.end),make('span','small',j.equipment?.equipmentName||'历史仪器'));
     const detail=make('td','',String(j.message||'').replace(/\x1b\[[0-9;]*m/g,'').split('\n')[0]);detail.title=j.message||'';
-    if(j.review?.message)detail.append(make('span','small '+(j.review.state==='verified'?'good':'review'),j.review.message));
+    if(j.review?.message&&j.review.message!==j.message)detail.append(make('span','small '+(j.review.state==='verified'?'good':'review'),j.review.message));
     if(j.recheckedAt)detail.append(make('strong','confirmation','复核读回确认 '+fmt(j.recheckedAt,true)));
-    if(j.review?.state==='waiting')detail.append(make('span','small review','自动核对时间 '+fmt(j.review.nextAt,true)));
+    if(j.review?.state==='waiting')detail.append(make('span','small review',j.review.protocol===2?(j.review.stage==='immediate'?'首次复核将在账号空闲后立即执行':'再次复核时间 '+fmt(j.review.nextAt,true)):'自动核对时间 '+fmt(j.review.nextAt,true)));
+    for(const h of j.review?.history||[]){const name={immediate:'首次复核',delayed:'再次复核',manual:'手动复核',legacy:'旧版复核'}[h.stage]||'复核';detail.append(make('span','small '+(h.outcome==='verified'?'good':'review'),`${name} ${fmt(h.checkedAt,true)} · ${h.outcome==='verified'?'已确认':'未确认'}`));}
     if(j.recovery?.state==='waiting')detail.append(make('span','small review','下次登录重试 '+fmt(j.recovery.nextAt,true)));
     if(needsAction(j))detail.append(reviewActions(j));
     if(j.savingAt) detail.append(make('span','small','保存调用 '+fmt(j.savingAt,true)));
@@ -297,6 +299,8 @@ async function previewPlan(){const date=$('#plan-date').value,request=++previewR
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
 for(const [id,key] of [['setting-autostart','autoStart'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
+function saveReviewPolicy(){const e=$('#setting-review-interval'),value=Number(e.value);if(!e.value||!e.checkValidity()||!Number.isSafeInteger(value)||value<1){const pending=timers.get('review-policy');if(pending)clearTimeout(pending.timer);timers.delete('review-policy');revisions.set('review-policy',(revisions.get('review-policy')||0)+1);dirty.add('review-policy');saveErrors.set('review-policy','再次复核间隔需为正整数分钟');savedState();return;}autosave('review-policy',()=>api('review-policy',{retryIntervalMinutes:value},'PUT'));}
+$('#setting-review-interval').addEventListener('input',saveReviewPolicy);
 function saveRetries(){const a=$('#setting-task-retries'),b=$('#setting-captcha-retries');if(!a.value||!b.value||!a.checkValidity()||!b.checkValidity()){const pending=timers.get('retry');if(pending)clearTimeout(pending.timer);timers.delete('retry');revisions.set('retry',(revisions.get('retry')||0)+1);dirty.add('retry');saveErrors.set('retry','重试次数需为0至20的整数');savedState();return;}const policy={taskRetries:Number(a.value),captchaRetries:Number(b.value)};autosave('retry',()=>api('retry-policy',policy,'PUT'));}
 for(const id of ['setting-task-retries','setting-captcha-retries'])$('#'+id).addEventListener('input',saveRetries);
 function saveRetention(){
@@ -338,7 +342,7 @@ $('#restore-file').addEventListener('change',async e=>{
       make('p','',`新增 ${r.newAccounts} 个账号 · 更新 ${r.updatedAccounts} 个同名账号 · 保留 ${r.retainedAccounts} 个本机其他账号 · ${r.needsPassword} 个需重录密码`));
     const wrap=make('div','table-wrap'),table=make('table'),head=make('thead'),tr=make('tr');for(const text of ['账号 / 使用人','处理方式','密码处理','导入后状态'])tr.append(make('th','',text));head.append(tr);table.append(head);
     const body=make('tbody');for(const a of r.accountChanges){const row=make('tr');row.append(make('td','',a.username+(a.owner?' / '+a.owner:'')),make('td','',a.action),make('td','',a.password),make('td','',a.enabled?'启用':'停用'));body.append(row);}table.append(body);wrap.append(table);root.append(wrap);
-    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
+    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；再次复核间隔 ${r.reviewPolicy.retryIntervalMinutes} 分钟；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
     if(r.dateDetails?.length){const details=make('details','backup-date-plans'),summary=make('summary','',`查看单日调整：${r.customDates}天自定义时间段、${r.assignmentDays}天已保存分配`);details.append(summary);for(const d of r.dateDetails){details.append(make('p','',d.date+' · '+d.windows.join('、')+' · '+d.accounts.map(a=>(state.windows.find(w=>w.id===a.windowId)?.start||a.windowId)+' '+a.username).join('；')));}root.append(details);}
     if(r.selectionWarning)root.append(make('p','bad',r.selectionWarning));$('#confirm-restore').hidden=false;$('#cancel-restore').hidden=false;
   }catch(error){clearRestore();$('#restore-result').hidden=false;$('#restore-result').textContent='无法预览：'+error.message;toast(error.message,true);}finally{e.target.value='';}
