@@ -68,7 +68,7 @@ class BrowserWorker {
       // A prior failed or paused form must not be reused for another slot.
       const cancel = page.locator('.dialog_block:visible input[name="cancel"]');
       if (await cancel.count()) await cancel.click();
-      const result = await preflightBooking(page, { date: job.date, start: job.start, end: job.end }, { allowBeforeRelease: true, rules: rulesFor(job.equipment), onStep: job.onStep });
+      const result = await preflightBooking(page, { date: job.date, start: job.start, end: job.end }, { ...this.identityOptions(job), allowBeforeRelease: true, rules: rulesFor(job.equipment), onStep: job.onStep });
       if (result.alreadyExists) await this.releaseSession(job.accountId, job.id);
       else { const session = (this.sessions.get(job.id) || this.sessions.get(job.accountId)); session.preflight = result; await warmSlot(page, job.date, job.start); job.onStep?.('slot_warmed', '目标时间已提前预选，双击事件已准备；尚未打开表单或保存'); }
       return result;
@@ -82,7 +82,7 @@ class BrowserWorker {
       let prepared;
       for (;;) {
         if (this.store.data.config.enabled === false) throw new Error('调度已暂停，保存未执行');
-        try { prepared = await this.bookingApi.prepareBooking(session.page, request, { rules: rulesFor(job.equipment), preflight: session.preflight, onStep: job.onStep }); break; }
+        try { prepared = await this.bookingApi.prepareBooking(session.page, request, { ...this.identityOptions(job), rules: rulesFor(job.equipment), preflight: session.preflight, onStep: job.onStep }); break; }
         catch (error) {
           if (error.code !== 'WEBSITE_REJECTED') throw error;
           const config = job.runtime?.config || this.store.data.config;
@@ -95,15 +95,19 @@ class BrowserWorker {
             await session.page.waitForTimeout(delay); continue;
           }
           // Reconcile a booking that appeared while waiting, without another save.
-          const assessment = await this.bookingApi.preflightBooking(session.page, request, { rules: rulesFor(job.equipment), onStep: job.onStep });
+          const assessment = await this.bookingApi.preflightBooking(session.page, request, { ...this.identityOptions(job), rules: rulesFor(job.equipment), onStep: job.onStep });
           if (assessment.alreadyExists) return { status: 'already_exists', reservationId: assessment.reservationId };
           throw error;
         }
       }
       if (prepared.alreadyExists) return { status: 'already_exists', reservationId: prepared.reservationId };
-      return await this.bookingApi.commitBooking(session.page, request, { beforeSave, expectedUserId: session.preflight?.userId, rules: rulesFor(job.equipment), onStep: job.onStep });
+      return await this.bookingApi.commitBooking(session.page, request, { ...this.identityOptions(job), beforeSave, expectedUserId: session.preflight?.userId, rules: rulesFor(job.equipment), onStep: job.onStep });
     } catch (error) { await this.capture(job, 'commit', error, session.page); throw error; }
     finally { await this.releaseSession(job.accountId, job.id); }
+  }
+  identityOptions(job) {
+    const identity=require('./site-identity.cjs');
+    return {onIdentity:userId=>identity.recordIdentity(this.store,job.accountId,userId,job.runtime?.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length};
   }
   async searchEquipment(name) {
     const account = this.store.accounts().find(a => a.enabled && a.hasPassword);
