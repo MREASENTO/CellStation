@@ -42,13 +42,13 @@ function syncDates(now = Date.now() + offset) {
   if (changed.includes('plan-date')) { preview = null; previewRequest++; renderPlan(); previewPlan(); }
   if (changed.includes('summary-date')) loadSummary();
   if (changed.includes('assignment-date')) loadAssignment(true).catch(e=>toast(e.message,true));
-  if (changed.includes('site-date')&&view==='site')startSiteRead();
+  if (changed.includes('site-date')&&view==='site'){renderSite();startSiteRead();}
 }
 for (const id of dateIds) {
   const input = $('#'+id), action = button('跟随日期',()=>{dateModel(id).resume(id);syncDates();},'date-follow-button');
   action.setAttribute('aria-label',(input.getAttribute('aria-label')||input.closest('label')?.childNodes[0]?.textContent.trim()||'目标预约日期')+'：恢复自动跟随');
   input.insertAdjacentElement('afterend',action);dateButtons.set(id,action);
-  input.addEventListener('change',()=>{dateModel(id).edit(id,input.value,Date.now()+offset);syncDates();if(id==='site-date'&&view==='site')startSiteRead();});
+  input.addEventListener('change',()=>{dateModel(id).edit(id,input.value,Date.now()+offset);syncDates();if(id==='site-date'&&view==='site')renderSite();});
   input.addEventListener('blur',()=>syncDates());
 }
 const dirty = new Set(), timers = new Map(), revisions = new Map();
@@ -135,42 +135,60 @@ function renderPersonal(){
 $('#personal-account').addEventListener('change',()=>{const id=$('#personal-account').value||null;$('#open-personal-site').disabled=!id||!$('#personal-equipment').value;autosave('personal-account',()=>api('personal-account',{accountId:id},'PUT'),0);});
 $('#personal-equipment').addEventListener('change',()=>{$('#open-personal-site').disabled=!$('#personal-account').value||!$('#personal-equipment').value;});
 $('#open-personal-site').addEventListener('click',async()=>{const button=$('#open-personal-site');button.disabled=true;try{await window.cellStationFlush();const result=await api('website/open-personal',{equipmentId:Number($('#personal-equipment').value)});toast(result.message,false,result.ready?'':'review');}catch(e){toast(e.message,true);}finally{button.disabled=false;}});
-let siteRequest=0,siteError=null,siteStarting=false,siteKey='',siteEquipmentKey='',siteDetail=null;
+let siteRequest=0,siteError=null,siteStarting=false,siteKey='',siteEquipmentKey='',siteDetail=null,siteAllDay=false,siteHourStart=0,siteScrollKey='',siteClockSecond=null,siteClockHour=null;
 const plusDays=(date,n)=>day(Date.parse(date+'T00:00:00+08:00')+n*86400000);
 const weekOf=date=>{const ms=Date.parse(date+'T00:00:00+08:00');return plusDays(date,-new Date(ms+28800000).getUTCDay());};
-function changeSiteWeek(n){const input=$('#site-date');input.value=plusDays(input.value,n*7);siteDateFollow.edit('site-date',input.value,Date.now()+offset);syncDates();startSiteRead();}
+function changeSiteWeek(n){const input=$('#site-date');input.value=plusDays(input.value,n*7);siteDateFollow.edit('site-date',input.value,Date.now()+offset);syncDates();renderSite();}
 $('#site-prev').addEventListener('click',()=>changeSiteWeek(-1));$('#site-next').addEventListener('click',()=>changeSiteWeek(1));
 $('#site-equipment').addEventListener('change',()=>{siteKey='';renderSite();});
-async function startSiteRead(){
-  if(!state||!$('#site-date').value)return;const date=$('#site-date').value,request=++siteRequest;
-  siteError=null;siteStarting=true;renderSite();
-  try{await api('website/read',{date});if(request===siteRequest)await refresh();}
-  catch(e){if(request===siteRequest){siteError={date,message:e.message};toast(e.message,true);}}
+$('#site-all-day').addEventListener('change',()=>{siteAllDay=$('#site-all-day').checked;siteKey='';siteScrollKey='';renderSite();});
+$('#site-now').addEventListener('click',()=>{const now=Date.now()+offset,today=day(now);if(weekOf($('#site-date').value)!==weekOf(today)){siteDateFollow.resume('site-date');syncDates(now);renderSite();}updateSiteClock(now,true);const line=$('.site-now-line');if(line){const scroll=$('#site-calendar-scroll'),column=line.parentElement;scroll.scrollTop=Math.max(0,parseFloat(line.style.top)-100);scroll.scrollLeft=Math.max(0,column.offsetLeft-$('#site-calendar').offsetLeft-70);}});
+async function startSiteRead(force=false){
+  if(!state||!$('#site-date').value)return;const request=++siteRequest;siteError=null;siteStarting=true;renderSite();
+  try{await api('website/read',{date:$('#site-date').value,force});if(request===siteRequest)await refresh();}
+  catch(e){if(request===siteRequest){siteError=e.message;toast(e.message,true);}}
   finally{if(request===siteRequest){siteStarting=false;renderSite();}}
 }
 function renderSite(){
-  const date=$('#site-date').value;if(!date)return;const start=weekOf(date),end=plusDays(start,6);$('#site-week-label').textContent=start.replaceAll('-','/')+' - '+end.replaceAll('-','/');
+  const date=$('#site-date').value;if(!date)return;const start=weekOf(date),end=plusDays(start,6),now=Date.now()+offset,today=day(now);$('#site-week-label').textContent=start.replaceAll('-','/')+' - '+end.replaceAll('-','/');
   const select=$('#site-equipment'),devices=(state.config.equipments||[]).filter(d=>d.enabled!==false),deviceKey=JSON.stringify(devices);
   if(deviceKey!==siteEquipmentKey){siteEquipmentKey=deviceKey;const selected=select.value;select.replaceChildren();for(const d of devices){const o=make('option','',d.equipmentName);o.value=String(d.equipmentId);select.append(o);}if(devices.some(d=>String(d.equipmentId)===selected))select.value=selected;}
-  const result=state.siteAppointments;
-  if(!result||result.date!==date||siteError?.date===date){$('#site-calendar').replaceChildren();siteKey='';$('#site-errors').replaceChildren();$('#site-errors').hidden=true;$('#site-empty').hidden=true;$('#site-summary').textContent=siteError?.date===date?siteError.message:'正在读取所选日期的预约…';$('#refresh-site').disabled=siteStarting;return;}
-  const loading=result.status==='loading';$('#refresh-site').disabled=loading||siteStarting;
-  $('#site-summary').textContent=loading?'正在读取网站预约…':`${result.message||''}${result.checkedAt?' · 更新于 '+fmt(result.checkedAt,true):''}${result.total?` · 已核实 ${result.identified}/${result.total} 个账号`:''}`;
-  const key=JSON.stringify([start,select.value,result.status,result.rows]);
-  if(key!==siteKey){siteKey=key;const root=$('#site-calendar');root.replaceChildren();const corner=make('div','site-corner','时间');root.append(corner);const week=['周日','周一','周二','周三','周四','周五','周六'];
-    for(let i=0;i<7;i++){const d=plusDays(start,i),head=make('div','site-day-head'+(d===date?' selected':''));head.append(make('strong','',week[i]),make('span','',d.slice(5).replace('-','/')));root.append(head);}
-    const axis=make('div','site-time-axis');for(let h=0;h<24;h++){const label=make('span','',String(h).padStart(2,'0')+':00');label.style.top=(h*56)+'px';axis.append(label);}root.append(axis);
-    const selected=Number(select.value),rows=(result.rows||[]).filter(x=>Number(x.equipmentId)===selected);
-    for(let i=0;i<7;i++){const d=plusDays(start,i),from=Date.parse(d+'T00:00:00+08:00'),to=from+86400000,column=make('div','site-day-column'),events=rows.filter(x=>x.start<to&&x.end>from).sort((a,b)=>a.start-b.start||a.end-b.end),laneEnds=[],position=[];
+  const result=state.siteAppointments||{status:'idle',rows:[]},loading=result.status==='loading',range=result.deviceRanges?.[select.value],checked=range?.checkedAt||result.checkedAt;
+  $('#refresh-site').disabled=loading||siteStarting;
+  $('#site-summary').textContent=(siteError||result.message||'每日更新一次，读取当天起未来7天预约。')+(checked?' · 缓存更新于 '+fmt(checked,true).slice(0,19):'')+(range?' · 读取范围 '+range.start+' 至 '+range.end:result.rangeStart?' · 读取范围 '+result.rangeStart+' 至 '+result.rangeEnd:'');
+  const selected=Number(select.value),rows=(result.rows||[]).filter(x=>Number(x.equipmentId)===selected&&x.start<Date.parse(plusDays(end,1)+'T00:00:00+08:00')&&x.end>Date.parse(start+'T00:00:00+08:00'));
+  const key=JSON.stringify([start,select.value,result.status,result.rows,range,today,siteAllDay,new Date(now+28800000).getUTCHours()]);
+  if(key!==siteKey){siteKey=key;const root=$('#site-calendar');root.replaceChildren();const mins=[];
+    for(const x of rows){for(let i=0;i<7;i++){const from=Date.parse(plusDays(start,i)+'T00:00:00+08:00'),to=from+86400000;if(x.start<to&&x.end>from)mins.push([Math.max(0,(x.start-from)/60000),Math.min(1440,(x.end-from)/60000)]);}}
+    let begin=mins.length?Math.max(0,Math.floor(Math.min(...mins.map(x=>x[0]))/60)-1):8,finish=mins.length?Math.min(24,Math.ceil(Math.max(...mins.map(x=>x[1]))/60)+1):21;
+    if(today>=start&&today<=end){const h=new Date(now+28800000).getUTCHours();begin=Math.min(begin,Math.max(0,h-1));finish=Math.max(finish,Math.min(24,h+2));}
+    if(siteAllDay){begin=0;finish=24;}siteHourStart=begin;root.style.gridTemplateRows=`44px ${(finish-begin)*56}px`;
+    const corner=make('div','site-corner','时间');root.append(corner);const week=['周日','周一','周二','周三','周四','周五','周六'];
+    const covered=d=>range?range.days?.includes(d)||d>=range.start&&d<=range.end:result.rangeStart?d>=result.rangeStart&&d<=result.rangeEnd:true;
+    for(let i=0;i<7;i++){const d=plusDays(start,i),head=make('div','site-day-head');head.dataset.date=d;head.append(make('strong','',week[i]),make('span','',d.slice(5).replace('-','/')));if(!covered(d)){head.classList.add('uncached');head.title='该日期尚无完整缓存；仅显示已有记录';}root.append(head);}
+    const axis=make('div','site-time-axis');for(let h=begin;h<finish;h++){const label=make('span','',String(h).padStart(2,'0')+':00');label.style.top=((h-begin)*56)+'px';axis.append(label);}root.append(axis);
+    for(let i=0;i<7;i++){const d=plusDays(start,i),midnight=Date.parse(d+'T00:00:00+08:00'),from=midnight+begin*3600000,to=midnight+finish*3600000,column=make('div','site-day-column'),events=rows.filter(x=>x.start<to&&x.end>from).sort((a,b)=>a.start-b.start||a.end-b.end),laneEnds=[],position=[];column.dataset.date=d;
       for(const x of events){const a=Math.max(x.start,from),b=Math.min(x.end,to);let lane=laneEnds.findIndex(t=>t<=a);if(lane<0)lane=laneEnds.length;laneEnds[lane]=b;position.push({x,a,b,lane});}
       const lanes=Math.max(1,laneEnds.length);for(const {x,a,b,lane} of position){const card=make('button','site-event site-event-'+x.membership);card.type='button';card.style.top=((a-from)/1800000*28)+'px';card.style.height=Math.max(20,(b-a)/1800000*28)+'px';card.style.left=(lane*100/lanes)+'%';card.style.width=(100/lanes)+'%';const text=fmt(x.start).slice(0,5)+'–'+fmt(x.end).slice(0,5);card.title=`${text} ${x.owner} · ${{ours:'本团队',other:'非本团队',unknown:'待确认'}[x.membership]||'待确认'}`;card.setAttribute('aria-label',card.title);card.append(make('span','site-event-time',text),make('strong','site-event-owner',x.owner));card.addEventListener('click',()=>showSiteDetail(x));column.append(card);}root.append(column);}
-    $('#site-empty').hidden=loading||rows.length>0;$('#site-empty').textContent=result.status==='complete'?'该周该设备暂无预约':'暂无可显示的预约';}
+    updateSiteClock(now,true);
+    const scrollKey=start+'|'+selected+'|'+siteAllDay;if(scrollKey!==siteScrollKey&&!loading){siteScrollKey=scrollKey;const meaningful=mins.filter(x=>x[0]>=360),focus=meaningful.length?Math.min(...meaningful.map(x=>x[0])):mins.length?Math.min(...mins.map(x=>x[0])):480;$('#site-calendar-scroll').scrollTop=Math.max(0,(focus-begin*60-30)/30*28);}
+  }
+  $('#site-empty').hidden=loading||rows.length>0;$('#site-empty').textContent=checked?'该周暂未缓存预约记录，可查看缓存范围内日期':'尚无预约缓存，今日将自动更新，也可点击“立即更新”';
   const errors=$('#site-errors');errors.hidden=!result.errors?.length;errors.replaceChildren();for(const message of result.errors||[])errors.append(make('p','',message));
+}
+function updateSiteClock(now=Date.now()+offset,force=false){
+  const hour=day(now)+'|'+new Date(now+28800000).getUTCHours();if(!force&&siteClockHour!==hour){siteClockHour=hour;renderSite();return;}siteClockHour=hour;
+  const second=Math.floor(now/1000);if(!force&&siteClockSecond===second)return;siteClockSecond=second;const today=day(now),minutes=(now-Date.parse(today+'T00:00:00+08:00'))/60000;
+  for(const e of document.querySelectorAll('.site-day-head,.site-day-column')){e.classList.toggle('today',e.dataset.date===today);e.classList.toggle('past',e.dataset.date<today);}
+  for(const e of document.querySelectorAll('.site-now-line,.site-current-slot'))if(e.parentElement.dataset.date!==today)e.remove();
+  const column=[...document.querySelectorAll('.site-day-column')].find(e=>e.dataset.date===today);if(!column)return;
+  let slot=column.querySelector('.site-current-slot');if(!slot){slot=make('div','site-current-slot');slot.setAttribute('aria-hidden','true');column.append(slot);}slot.style.top=((Math.floor(minutes/30)*30-siteHourStart*60)/30*28)+'px';
+  let line=column.querySelector('.site-now-line');if(!line){line=make('div','site-now-line');line.append(make('span','site-now-label'));column.append(line);}line.style.top=((minutes-siteHourStart*60)/30*28)+'px';line.firstElementChild.textContent='现在 '+fmt(now).slice(0,8);line.setAttribute('aria-label','当前时间 '+fmt(now).slice(0,8));
 }
 function showSiteDetail(x){siteDetail=x;$('#site-detail-text').textContent=`${x.equipmentName} · ${fmt(x.start,true).slice(0,16)}–${fmt(x.end,true).slice(0,16)} · ${x.owner} · ${{ours:'本团队',other:'非本团队',unknown:'待确认'}[x.membership]||'待确认'}`;$('#site-detail-add').hidden=x.membership==='ours'||!x.profileId||!x.owner||x.owner==='未显示';$('#site-detail').showModal();}
 $('#site-detail-close').addEventListener('click',()=>$('#site-detail').close());
 $('#site-detail-add').addEventListener('click',()=>{if(!siteDetail)return;const x=siteDetail;$('#site-detail').close();const existing=(state.config.teamMembers||[]).find(m=>m.name===x.owner&&!m.profileId);editTeam(existing||{name:x.owner,profileId:x.profileId});if(existing)$('#team-form').elements.profileId.value=x.profileId;});
-$('#refresh-site').addEventListener('click',startSiteRead);
+$('#refresh-site').addEventListener('click',()=>startSiteRead(true));
 let accountsSignature;
 function renderAccounts() {
   if(dirty.has('account-toggle')) return;
@@ -339,7 +357,7 @@ function renderHealth() {
 }
 function renderActivity() {const root=$('#activity-list');root.replaceChildren();for(const e of state.events.slice(0,5)){const row=make('div','activity-item');row.append(make('p','',e.message),make('time','',fmt(Date.parse(e.at),true)));root.append(row);} }
 function renderExclusions(){const root=$('#exclusion-list');root.replaceChildren();for(const [i,e] of state.config.exclusions.entries()){const row=make('div','exclusion-entry');row.append(make('b','',e.date+' · '+(e.windowIds.length===5?'整天':e.windowIds.map(id=>state.windows.find(w=>w.id===id)?.start).join('、'))),make('span','',e.reason),button('移除',async()=>{await api('exclusions',{entries:state.config.exclusions.filter((_,n)=>n!==i)},'PUT');preview=null;await refresh();}));root.append(row);} }
-function updateClock(){if(!state)return;const now=Date.now()+offset;syncDates(now);$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
+function updateClock(){if(!state)return;const now=Date.now()+offset;syncDates(now);updateSiteClock(now);$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
 function editAccount(a){const f=$('#account-form');f.reset();f.elements.id.value=a?.id||'';f.elements.username.value=a?.username||'';f.elements.username.readOnly=Boolean(a);f.elements.owner.value=a?.owner||'';f.elements.enabled.checked=a?a.enabled:state.accounts.filter(x=>x.enabled).length<5;f.elements.password.required=!a;f.elements.password.placeholder=a?'留空保留密码；输入后移开自动保存':'输入密码以添加账号';$('#account-dialog-title').textContent=a?'编辑账号 · 自动保存':'添加账号';$('#save-account-button').hidden=Boolean(a);$('#password-note').textContent=a?'使用人、密码及启用状态在修改后自动保存，无需确认。':'填写登录账号与密码后点击添加。最多同时启用5个账号。';$('#account-dialog').showModal();}
 function editField(name){const f=$('#account-form');if(!f.elements.id.value)return;const input={id:f.elements.id.value,username:f.elements.username.value};input[name]=name==='enabled'?f.elements.enabled.checked:f.elements[name].value;if(name==='password'&&!input.password)return;autosave('account-'+name,async()=>{await api('accounts',input);if(name==='password')f.elements.password.value='';},name==='password'?0:450);}
 $('#account-form').elements.owner.addEventListener('input',()=>editField('owner'));
