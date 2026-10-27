@@ -59,7 +59,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.7' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.8' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -85,7 +85,7 @@ async function createManager(options = {}) {
         if(req.method==='POST'&&url.pathname==='/api/team'){const member=store.saveTeamMember(await body(req));siteAppointments?.reclassify?.();return send(200,{member});}
         if(req.method==='DELETE'&&url.pathname==='/api/team'){const {id}=await body(req);store.removeTeamMember(id);siteAppointments?.reclassify?.();return send(200,{removed:true});}
         if(req.method==='PUT'&&url.pathname==='/api/personal-account'){const input=await body(req);store.setPersonalAccount(input.accountId);return send(200,{accountId:store.data.config.personalAccountId});}
-        if(req.method==='POST'&&url.pathname==='/api/website/read'){const input=await body(req);return send(200,await siteAppointments.start(input.date));}
+        if(req.method==='POST'&&url.pathname==='/api/website/read'){const input=await body(req);return send(200,await siteAppointments.start(input.date,{force:input.force===undefined?false:input.force}));}
         if(req.method==='POST'&&url.pathname==='/api/website/open-personal'){const input=await body(req);await siteAppointments.cancel('已切换至预约日历');return send(200,await reviews.openPersonal(store.data.config.personalAccountId,input.equipmentId));}
         if (req.method === 'PUT' && url.pathname === '/api/catch-up') {const input=await body(req);store.setCatchUpEnabled(input.enabled);return send(200,{enabled:store.data.config.catchUpEnabled});}
         if (req.method === 'PUT' && url.pathname === '/api/review-policy') {store.setReviewPolicy(await body(req));reviews.reschedule?.();return send(200,{reviewPolicy:store.data.config.reviewPolicy});}
@@ -258,6 +258,7 @@ async function createManager(options = {}) {
     if (options.runScheduler !== false) reviews.start();
     if (options.runScheduler !== false) operations.start();
     if (options.runScheduler !== false) await scheduler.start();
+    if (options.runScheduler !== false) siteAppointments.startDaily?.();
   } catch (error) { server.close(); throw error; }
   application = { server, store, scheduler, worker, operations, reviews, siteAppointments, wechat, controlRevision: () => controlRevision, setStartupPending: value => { pendingStart = Boolean(value); }, cancelPendingStart: () => { controlRevision++; pendingStart = false; }, url: `http://127.0.0.1:${server.address().port}`,
     close: async () => { if (shuttingDown) return; shuttingDown = true; controlRevision++; operations.cancel(); clearInterval(scheduler.timer); await siteAppointments?.close(); await reviews?.close(); await scheduler.stop(); await operations.checkPromise?.catch(() => {}); await operations.retentionPromise?.catch(() => {}); await wechat.idle(); await new Promise(resolve => server.close(resolve)); },
