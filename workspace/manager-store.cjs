@@ -13,6 +13,8 @@ class ManagerStore {
     this.data.bindings ||= {};
     this.data.dailyAssignments ||= {};
     this.data.config.shuffleDaily = true;
+    if(this.data.config.catchUpEnabled===undefined)this.data.config.catchUpEnabled=true;
+    if(typeof this.data.config.catchUpEnabled!=='boolean')throw new Error('自动补尝试设置无效');
     this.data.config.equipment ||= require('./equipment.cjs').defaultEquipment();
     this.data.config.equipments = require('./equipment.cjs').validateEquipmentList(this.data.config.equipments || [this.data.config.equipment]);
     this.data.config.theme ||= 'system';
@@ -198,7 +200,7 @@ class ManagerStore {
     if (this.data.config.enabled === enabled) return;
     this.data.config.enabled = enabled;
     this.data.config.enabledAt = enabled ? now : null;
-    this.event('scheduler', enabled ? '调度已启动，只处理启动后开放的时段' : '调度已暂停');
+    this.event('scheduler', enabled ? '调度已启动，计划按当前设置执行' : '调度已暂停');
   }
   setExclusions(entries) {
     this.data.config.exclusions = validateExclusions(entries);
@@ -208,6 +210,8 @@ class ManagerStore {
     this.data.config.retentionPolicy = require('./retention.cjs').validateRetention(policy);
     this.event('config', `截图与文件日志保留规则已保存：${policy.enabled ? `${policy.compressAfterDays}天压缩、${policy.deleteAfterDays}天清理` : '自动维护已关闭'}`);
   }
+  setPersonalAccount(id) {if(id!==null&&(typeof id!=='string'||!this.data.accounts.some(a=>a.id===id)))throw new Error('请选择已保存的账号');this.data.config.personalAccountId=id;this.event('config',id?'本人账号已设置':'本人账号已取消');}
+  setCatchUpEnabled(enabled) {if(typeof enabled!=='boolean')throw new Error('自动补尝试设置无效');this.data.config.catchUpEnabled=enabled;this.event('config',enabled?'已开启已开放计划的自动补尝试':'已关闭已开放计划的自动补尝试');}
   setReviewPolicy(policy) { this.data.config.reviewPolicy=validateReviewPolicy(policy);this.event('config',`再次复核间隔已保存：${policy.retryIntervalMinutes}分钟`); }
   setRetryPolicy(policy) {
     this.data.config.retryPolicy = validateRetryPolicy(policy);

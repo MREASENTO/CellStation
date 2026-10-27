@@ -20,7 +20,7 @@ class Reviews {
   constructor(store, root, { clock = Date.now, canRun = () => true, launch, login = automaticLogin, open = openEquipment, week = ensureWeek, components = calendarComponents } = {}) {
     Object.assign(this, { store, root, clock, canRun, login, open, week, components });
     this.launch = launch || (options => require('playwright').chromium.launch(options));
-    this.sessions = new Map(); this.pending = new Map(); this.closed = false;
+    this.sessions = new Map(); this.pending = new Map(); this.pendingPersonal = new Map(); this.closed = false;
     for(const job of Object.values(store.data.jobs)) {
       if(job.status!=='needs_review')continue;
       if(job.review?.protocol===2&&job.review.state==='checking')store.job(job,{review:{...job.review,state:'waiting',nextAt:clock(),message:'上次复核中断，恢复未完成的查询轮次；不会重复提交预约。'}});
@@ -29,12 +29,12 @@ class Reviews {
     this.reschedule();
   }
   get active() { return this.sessions.size + this.pending.size; }
-  isAccountBusy(accountId) { return [...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
+  isAccountBusy(accountId) { return [...this.pendingPersonal.values()].includes(accountId)||[...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
   target(id) {
     const job = this.store.data.jobs[id];
     if (!job || !['needs_review','failed','missed','already_exists','success'].includes(job.status)) throw new Error('该记录当前不需要核对');
     const account = this.store.data.accounts.find(a => a.id === job.accountId || (job.accountUsername && a.username === job.accountUsername));
-    if (!account) throw new Error('原账号已移除，请从设置打开预约网站手动登录原账号核对；不会切换到其他账号');
+    if (!account) throw new Error('原账号已移除，请先在账号管理中重新添加原账号，再从首页打开网站核对');
     if (job.accountUsername && job.accountUsername !== account.username) throw new Error('当前账号与原预约账号不一致');
     reviewPlan(job);
     return { job: structuredClone(job), account: structuredClone(account), rules: rulesFor(job.equipment) };
@@ -71,7 +71,7 @@ class Reviews {
     const base=job.review||{},inFlow=job.status==='needs_review'&&base.protocol===2,checkedAt=this.clock();
     const autoAttempts=inFlow?Math.max(base.autoAttempts||0,stage==='immediate'?1:stage==='delayed'?2:0):0;
     const waiting=inFlow&&!match&&autoAttempts<2,manualRequired=inFlow&&!match&&!waiting;
-    const message=match?'复核已查到原账号、原设备、同时段及备注匹配的预约，未再次提交。':waiting?`首次复核未确认：${detail}；将在${this.intervalMs()/60000}分钟后再次复核。` :manualRequired?`再次复核失败：${detail}。已停止自动复核，请你自主复核。`:`本次复核未确认：${detail}；可手动再查或打开网页。`;
+    const message=match?'复核确认该设备时段已有本团队账号的预约。':waiting?`首次复核未确认：${detail}；将在${this.intervalMs()/60000}分钟后再次复核。` :manualRequired?`再次复核失败：${detail}。已停止自动复核，请你自主复核。`:`本次复核未确认：${detail}；可手动再查或打开网页。`;
     const history=[...(base.history||[]),{stage,automatic,startedAt,checkedAt,durationMs:checkedAt-startedAt,outcome:match?'verified':outcome,message}].slice(-30);
     const review={...base,state:match?'verified':waiting?'waiting':'failed',stage:waiting?'delayed':'finished',automatic,attempts:(base.attempts||0)+1,autoAttempts,manualRequired,notice:waiting?'retry_scheduled':manualRequired?'manual_required':undefined,startedAt,checkedAt,durationMs:checkedAt-startedAt,history,message,nextAt:waiting?checkedAt+this.intervalMs():null};
     if(stage==='immediate')review.firstCheckedAt=checkedAt;
@@ -118,9 +118,9 @@ class Reviews {
         const entry = await this.session(target,false), page=entry.page, plan=reviewPlan(job);
         const href=await page.locator('a.user').getAttribute('href');
         const userId=href?.match(/index[.](\d+)/)?.[1];if(!userId)throw new Error('无法确认登录身份，未更新预约结果');
+        const identity=require('./site-identity.cjs');identity.recordIdentity(this.store,target.account.id,userId,target.account);
         const rows=await this.components(page,plan.weekStart);
-        const remark=job.remark||target.rules.remark;
-        const match=rows.find(row=>String(row.content||'').includes(remark)&&assessComponents([row],plan,userId).duplicate);
+        const match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)]);
         return this.finish(job,match,'未查到匹配预约',automatic,stage,startedAt);
       } catch(error) {
         const diagnosticId=await captureFailure(this.root,job,'recheck',error,this.sessions.get(id)?.page).catch(()=>undefined);
@@ -147,6 +147,20 @@ class Reviews {
         this.sessions.delete(id);await entry?.browser.close().catch(()=>{});throw error;
       }
     });
+  }
+  async openPersonal(accountId,equipmentId) {
+    const account=this.store.data.accounts.find(a=>a.id===accountId);
+    const equipment=(this.store.data.config.equipments||[]).find(e=>e.equipmentId===equipmentId);
+    if(!account)throw new Error('请先选择本人账号');if(!equipment)throw new Error('请选择预约设备');
+    const id=`personal:${account.id}:${equipment.equipmentId}`;
+    const action=this.run(id,async()=>{
+      const existing=this.sessions.get(id);if(existing?.visible&&!existing.page?.isClosed()){await existing.page.bringToFront();return {opened:true,ready:true,message:'已打开预约日历'};}
+      const date=require('./schedule-logic.cjs').shanghaiDate(this.clock()),job={id,accountId:account.id,date},target={job,account:structuredClone(account),rules:rulesFor(equipment)};
+      if(!this.canRun(job))throw new Error('该账号正在执行预约，请稍后打开');
+      try{const entry=await this.session(target,true);await this.week(entry.page,Date.parse(date+'T00:00:00+08:00')/1000);await entry.page.bringToFront();return {opened:true,ready:true,message:'已登录并打开预约日历'};}
+      catch(error){const entry=this.sessions.get(id);if(entry?.page&&!entry.page.isClosed()){await entry.page.bringToFront().catch(()=>{});return {opened:true,ready:false,message:'预约网站已打开，请完成登录或选择设备：'+safeError(error)};}this.sessions.delete(id);await entry?.browser.close().catch(()=>{});throw error;}
+    });
+    this.pendingPersonal.set(id,account.id);try{return await action;}finally{this.pendingPersonal.delete(id);}
   }
   async close() {
     this.closed=true;clearInterval(this.timer);

@@ -8,7 +8,7 @@ const { createManager } = require('./manager-server.cjs');
 const base = path.join(__dirname, '..', 'work', 'tests'); fs.mkdirSync(base, { recursive: true });
 const vault = { protect: async s => Buffer.from(s).toString('base64'), unprotect: async s => Buffer.from(s, 'base64').toString() };
 function fixture() {
-  const root = fs.mkdtempSync(path.join(base, 'retry-')); const store = new ManagerStore(root, vault);
+  const root = fs.mkdtempSync(path.join(base, 'retry-')); const store = new ManagerStore(root, vault); store.data.config.catchUpEnabled = false;
   store.data.accounts = [{ id: 'account', username: 'dummy', label: '模拟账号', enabled: true, revision: 1, passwordCipher: Buffer.from('local-test').toString('base64') }];
   store.data.config.windows[0] = { id: 'w1', enabled: true, accountId: 'account' }; store.persist();
   let now = Date.parse('2026-10-22T07:00:00+08:00');

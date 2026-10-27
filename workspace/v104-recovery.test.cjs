@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {ManagerStore}=require('./manager-store.cjs'),{Scheduler,RECOVERY_INTERVAL}=require('./scheduler.cjs');
 const base=path.resolve(__dirname,'../work/tests');fs.mkdirSync(base,{recursive:true});
 async function fixture() {
- const directory=fs.mkdtempSync(path.join(base,'v104-recovery-')),store=new ManagerStore(directory,{protect:async s=>'cipher:'+s,unprotect:async s=>s.slice(7)});
+ const directory=fs.mkdtempSync(path.join(base,'v104-recovery-')),store=new ManagerStore(directory,{protect:async s=>'cipher:'+s,unprotect:async s=>s.slice(7)}); store.data.config.catchUpEnabled=false;
  await store.saveAccount({username:'original',password:'dummy',enabled:true});store.setRetryPolicy({taskRetries:0,captchaRetries:0});
  let now=Date.parse('2026-10-23T07:00:00+08:00'),offline=true,prepareCount=0,commitCount=0;const targets=[];
  const worker={prepare:async job=>{prepareCount++;targets.push({id:job.id,accountId:job.accountId,date:job.date,start:job.start,end:job.end,equipment:job.equipment});if(offline)throw new Error('network timeout');return{};},commit:async(job,before)=>{commitCount++;await before();return{status:'created',reservationId:88,confirmedAt:now};},releaseSession:async()=>{},close:async()=>{}};

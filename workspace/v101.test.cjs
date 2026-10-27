@@ -8,7 +8,7 @@ const { WechatNotifications } = require('./wechat-notifications.cjs');
 const base = path.resolve(__dirname, '../work/tests'); fs.mkdirSync(base, { recursive: true });
 const vault = { protect: async s => 'encrypted:' + s, unprotect: async s => s.slice(10) };
 async function fixture() {
-  const root = fs.mkdtempSync(path.join(base, 'v101-')), store = new ManagerStore(path.join(root, 'work/manager'), vault);
+  const root = fs.mkdtempSync(path.join(base, 'v101-')), store = new ManagerStore(path.join(root, 'work/manager'), vault); store.data.config.catchUpEnabled = false;
   await store.saveAccount({ username: 'mock-account', owner: '模拟人', password: 'not-real' });
   return { root, store };
 }

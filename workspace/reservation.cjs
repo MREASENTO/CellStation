@@ -16,15 +16,23 @@ async function openEquipment(page, rules) {
   await page.locator('table.calendar_week').waitFor({ state: 'visible' });
 }
 
-async function checkAvailability(page, plan) {
+async function checkAvailability(page, plan, options = {}) {
   if (!new URL(page.url()).pathname.includes(`index.${plan.equipmentId}.reserv`)) throw new Error('当前仪器页面不匹配');
   const weekStart = await ensureWeek(page, plan.start);
   const profile = await page.locator('a.user').getAttribute('href');
   const userId = profile.match(/index\.(\d+)/)?.[1];
   if (!userId) throw new Error('无法确认当前登录账号');
-  const assessment = assessComponents(await calendarComponents(page, weekStart), plan, userId);
-  if (assessment.duplicate) return { ...assessment, userId, weekStart };
-  if (assessment.conflicts.length) throw new Error('目标时段已被占用，未提交预约');
+  await options.onIdentity?.(userId);
+  const components=await calendarComponents(page, weekStart),assessment = assessComponents(components, plan, userId);
+  const {coveringOurs,oneOwner}=require('./site-identity.cjs');
+  const duplicate=coveringOurs(components,plan,[userId,...(options.profileIds?.()||[])]);
+  if (duplicate) return { ...assessment, duplicate, userId, weekStart };
+  if (assessment.conflicts.length) {
+    const known=new Set([userId,...(options.profileIds?.()||[])]),conflicts=assessment.conflicts;
+    const uncertain=conflicts.some(c=>!oneOwner(c.content)||known.has(oneOwner(c.content)))||!options.identitiesComplete?.();
+    const error=new Error(uncertain?'该时段已有预约，账号归属或覆盖范围需要核对':'目标时段已被占用');
+    if(uncertain)error.code='OWNERSHIP_UNCERTAIN';error.retryable=false;throw error;
+  }
   console.log(`该账号当天现有约 ${assessment.usedMinutes} 分钟；每日120分钟为计划参考。本次仅新增30分钟。`);
   return { ...assessment, userId, weekStart };
 }
@@ -51,11 +59,11 @@ async function verifyForm(page, plan) {
 async function preflightBooking(page, request, options = {}) {
   const rules = options.rules || readRules();
   const plan = planSlot(rules, request || rules.currentRequest, Date.now() / 1000, options);
-  const assessment = await checkAvailability(page, plan);
+  const assessment = await checkAvailability(page, plan, options);
   options.onStep?.('availability_checked', '目标周、账号及冲突已核对');
   if (assessment.duplicate) {
     console.log('BOOKING_ALREADY_EXISTS', assessment.duplicate.id);
-    return { plan, alreadyExists: true, reservationId: assessment.duplicate.id };
+    return { plan, alreadyExists: true, reservationId: assessment.duplicate.id, userId:assessment.userId };
   }
   return { plan, alreadyExists: false, userId: assessment.userId, weekStart: assessment.weekStart };
 }
@@ -79,7 +87,7 @@ async function prepareBooking(page, request, options = {}) {
 async function commitBooking(page, request, options = {}) {
   const rules = options.rules || readRules();
   const plan = planSlot(rules, request || rules.currentRequest);
-  const assessment = await checkAvailability(page, plan);
+  const assessment = await checkAvailability(page, plan, options);
   options.onStep?.('final_availability_checked', '提交前重新读取日历，核实冲突与重复预约');
   if (options.expectedUserId && String(options.expectedUserId) !== String(assessment.userId)) throw new Error('登录账号与提前准备时不一致，未保存');
   if (assessment.duplicate) return { status: 'already_exists', reservationId: assessment.duplicate.id, plan };

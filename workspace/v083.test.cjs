@@ -6,7 +6,7 @@ const date = '2026-10-29', release = Date.parse('2026-10-22T09:00:00+08:00');
 const gate = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function fixture(hooks = {}) {
   const directory = fs.mkdtempSync(path.resolve(__dirname, '../work/tests/v083-'));
-  const store = new ManagerStore(directory, { protect: async s => 'mock:' + s, unprotect: async s => s.slice(5) });
+  const store = new ManagerStore(directory, { protect: async s => 'mock:' + s, unprotect: async s => s.slice(5) }); store.data.config.catchUpEnabled = false;
   for (let i = 0; i < 2; i++) await store.saveAccount({ username: 'mock-user-' + i, password: 'not-real', owner: '测试' + i });
   let clock = release - 90000;
   const prepared = [], saves = [], closed = [];

@@ -35,7 +35,7 @@ class Operations {
   }
   persist() { const temp = this.file + `.${process.pid}.tmp`; fs.writeFileSync(temp, JSON.stringify(this.state, null, 2)); fs.renameSync(temp, this.file); }
   publicState() { return { startup: this.state.startup, health: this.state.health, network: this.state.network, suspendedAt: this.state.suspendedAt, lastResume: this.state.lastResume, exportsDirectory: this.exports, autoReports: this.state.autoReports, retention: this.state.retention }; }
-  signature() { return crypto.createHash('sha256').update(JSON.stringify({ accounts: this.store.accounts(), windows: this.store.data.config.windows, exclusions: this.store.data.config.exclusions, reviewPolicy:this.store.data.config.reviewPolicy, retryPolicy: this.store.data.config.retryPolicy, equipment: this.store.data.config.equipment, equipments: this.store.data.config.equipments, theme: this.store.data.config.theme, dateWindows: this.store.data.config.dateWindows, assignmentRevision: this.store.data.assignmentRevision, retentionPolicy: this.store.data.config.retentionPolicy })).digest('hex'); }
+  signature() { return crypto.createHash('sha256').update(JSON.stringify({ accounts: this.store.accounts(), windows: this.store.data.config.windows, exclusions: this.store.data.config.exclusions, personalAccountUsername:this.store.data.accounts.find(a=>a.id===this.store.data.config.personalAccountId)?.username||null, catchUpEnabled:this.store.data.config.catchUpEnabled, reviewPolicy:this.store.data.config.reviewPolicy, retryPolicy: this.store.data.config.retryPolicy, equipment: this.store.data.config.equipment, equipments: this.store.data.config.equipments, theme: this.store.data.config.theme, dateWindows: this.store.data.config.dateWindows, assignmentRevision: this.store.data.assignmentRevision, retentionPolicy: this.store.data.config.retentionPolicy })).digest('hex'); }
   recentCheck() { const check = this.state.health; return Boolean(check?.canStart && check.signature === this.signature() && this.clock() - check.completedAt < 600000); }
   startCheck(options = {}) {
     if (this.checkPromise) throw new Error('自检正在进行，请稍候');
@@ -153,7 +153,7 @@ class Operations {
   }
   backup(label = 'manual', destination) {
     const file = destination || path.join(this.exports, `backup-${label}-${this.clock()}-${crypto.randomBytes(3).toString('hex')}.json`);
-    const backup = { schema: 'cellstation-backup', version: 3, createdAt: new Date(this.clock()).toISOString(), encryptedFor: 'Windows CurrentUser DPAPI', accounts: this.store.data.accounts, windows: this.store.data.config.windows, exclusions: this.store.data.config.exclusions || [], reviewPolicy:this.store.data.config.reviewPolicy, retryPolicy: this.store.data.config.retryPolicy, equipment: this.store.data.config.equipment, equipments: this.store.data.config.equipments, theme: this.store.data.config.theme, poolMigration: 1, windowSelectionMigration: 1, retentionPolicy: this.store.data.config.retentionPolicy, dateWindows: this.store.data.config.dateWindows || {}, assignmentPlans: Object.fromEntries(Object.entries(this.store.data.dailyAssignments).filter(([, plan]) => ['manual', 'random'].includes(plan.mode)).map(([date, plan]) => [date, { mode: plan.mode, mapping: Object.fromEntries(Object.entries(plan.mapping).filter(([id, accountId]) => windowsFor(this.store.data.config, date).some(w => w.id === id && w.enabled) && this.store.data.accounts.some(a => a.id === accountId)).map(([id, accountId]) => [id, this.store.data.accounts.find(a => a.id === accountId).username])) }])) };
+    const backup = { schema: 'cellstation-backup', version: 3, createdAt: new Date(this.clock()).toISOString(), encryptedFor: 'Windows CurrentUser DPAPI', accounts: this.store.data.accounts, windows: this.store.data.config.windows, exclusions: this.store.data.config.exclusions || [], personalAccountUsername:this.store.data.accounts.find(a=>a.id===this.store.data.config.personalAccountId)?.username||null, catchUpEnabled:this.store.data.config.catchUpEnabled, reviewPolicy:this.store.data.config.reviewPolicy, retryPolicy: this.store.data.config.retryPolicy, equipment: this.store.data.config.equipment, equipments: this.store.data.config.equipments, theme: this.store.data.config.theme, poolMigration: 1, windowSelectionMigration: 1, retentionPolicy: this.store.data.config.retentionPolicy, dateWindows: this.store.data.config.dateWindows || {}, assignmentPlans: Object.fromEntries(Object.entries(this.store.data.dailyAssignments).filter(([, plan]) => ['manual', 'random'].includes(plan.mode)).map(([date, plan]) => [date, { mode: plan.mode, mapping: Object.fromEntries(Object.entries(plan.mapping).filter(([id, accountId]) => windowsFor(this.store.data.config, date).some(w => w.id === id && w.enabled) && this.store.data.accounts.some(a => a.id === accountId)).map(([id, accountId]) => [id, this.store.data.accounts.find(a => a.id === accountId).username])) }])) };
     const temporary = destination ? `${file}.${crypto.randomBytes(5).toString('hex')}.tmp` : file;
     try { fs.writeFileSync(temporary, JSON.stringify(backup, null, 2), { flag: 'wx', mode: 0o600 }); if (destination) fs.renameSync(temporary, file); }
     catch (error) { if (destination && fs.existsSync(temporary)) fs.unlinkSync(temporary); throw error; }
@@ -183,6 +183,8 @@ class Operations {
     const merged = this.store.data.accounts.filter(a => !sanitized.some(b => a.id === b.id)).concat(sanitized);
     if (merged.filter(a => a.enabled).length > 5) throw new Error('合并后启用账号超过5个。请先在账号管理停用不需要的本机账号，再重新预览；不会删除本机账号。');
     validateWindows(windows, merged); const exclusions = validateExclusions(input.exclusions || []);
+    const personalAccountId=input.personalAccountUsername===undefined?(merged.find(a=>a.id===this.store.data.config.personalAccountId)?.id||null):input.personalAccountUsername===null?null:merged.find(a=>a.username===input.personalAccountUsername)?.id;if(personalAccountId===undefined)throw new Error('备份中的本人账号不存在');
+    const catchUpEnabled=input.catchUpEnabled===undefined?this.store.data.config.catchUpEnabled:input.catchUpEnabled;if(typeof catchUpEnabled!=='boolean')throw new Error('备份中的自动补尝试设置无效');
     const reviewPolicy=validateReviewPolicy(input.reviewPolicy||this.store.data.config.reviewPolicy);
     const retryPolicy = validateRetryPolicy(input.retryPolicy || this.store.data.config.retryPolicy || { taskRetries: 2, captchaRetries: 2 });
     const equipment = require('./equipment.cjs').validateEquipment(input.equipment || this.store.data.config.equipment);
@@ -204,9 +206,9 @@ class Operations {
     }
     if (initialSignature !== this.signature()) throw new Error('配置在预览生成期间变化，请重新选择文件预览');
     const token = crypto.randomBytes(16).toString('hex');
-    this.restorePlan = { token, expires: this.clock() + 600000, signature: this.signature(), accounts: merged, windows, exclusions, retryPolicy, reviewPolicy, equipment, equipments, theme, retentionPolicy, dateWindows, assignmentPlans, importedAccounts: sanitized.length, needsPassword: sanitized.filter(a => !a.passwordCipher).length };
+    this.restorePlan = { token, expires: this.clock() + 600000, signature: this.signature(), accounts: merged, windows, exclusions, retryPolicy, reviewPolicy, catchUpEnabled, personalAccountId, equipment, equipments, theme, retentionPolicy, dateWindows, assignmentPlans, importedAccounts: sanitized.length, needsPassword: sanitized.filter(a => !a.passwordCipher).length };
     const selectedWindows = WINDOWS.filter(w => windows.find(b => b.id === w.id).enabled).map(w => `${w.start}–${w.end}`);
-    return { token, sourceCreatedAt: input.createdAt || null, sourceVersion: input.version, importedAccounts: sanitized.length, newAccounts: accountChanges.filter(a => a.action === '新增账号').length, updatedAccounts: accountChanges.filter(a => a.action === '更新已有账号').length, retainedAccounts: merged.length - sanitized.length, needsPassword: sanitized.filter(a => !a.passwordCipher).length, enabledAccounts: merged.filter(a => a.enabled).length, enabledWindows: selectedWindows.length, selectedWindows, customDates: Object.keys(dateWindows).length, assignmentDays: Object.keys(assignmentPlans).length, retentionPolicy, dateDetails: [...new Set([...Object.keys(dateWindows), ...Object.keys(assignmentPlans)])].sort().map(date => ({ date, windows: WINDOWS.filter(w => (dateWindows[date] || windows).some(b => b.id === w.id && b.enabled)).map(w => `${w.start}–${w.end}`), accounts: Object.entries(assignmentPlans[date]?.mapping || {}).map(([id, accountId]) => ({ windowId: id, username: merged.find(a => a.id === accountId).username })) })), accountChanges, exclusions: exclusions.length, retryPolicy, reviewPolicy, equipment: equipment.equipmentName, theme, selectionWarning: selectedWindows.length > merged.filter(a => a.enabled).length ? '所选窗口多于可用账号，导入后需补录密码或取消多余窗口才能启动。' : selectedWindows.length ? '' : '未选择预约窗口，导入后请先勾选再启动。', message: '按登录账号合并：同名更新、新账号加入、本机其他账号保留。所选窗口、单日时间段及分配结果、跳过日期、重试次数、再次复核间隔、仪器及主题将替换；执行记录、失败截图和桌面设置保留。导入前自动备份，导入后调度保持暂停。' };
+    return { token, sourceCreatedAt: input.createdAt || null, sourceVersion: input.version, importedAccounts: sanitized.length, newAccounts: accountChanges.filter(a => a.action === '新增账号').length, updatedAccounts: accountChanges.filter(a => a.action === '更新已有账号').length, retainedAccounts: merged.length - sanitized.length, needsPassword: sanitized.filter(a => !a.passwordCipher).length, enabledAccounts: merged.filter(a => a.enabled).length, enabledWindows: selectedWindows.length, selectedWindows, customDates: Object.keys(dateWindows).length, assignmentDays: Object.keys(assignmentPlans).length, retentionPolicy, dateDetails: [...new Set([...Object.keys(dateWindows), ...Object.keys(assignmentPlans)])].sort().map(date => ({ date, windows: WINDOWS.filter(w => (dateWindows[date] || windows).some(b => b.id === w.id && b.enabled)).map(w => `${w.start}–${w.end}`), accounts: Object.entries(assignmentPlans[date]?.mapping || {}).map(([id, accountId]) => ({ windowId: id, username: merged.find(a => a.id === accountId).username })) })), accountChanges, exclusions: exclusions.length, retryPolicy, reviewPolicy, catchUpEnabled, personalAccountId, equipment: equipment.equipmentName, theme, selectionWarning: selectedWindows.length > merged.filter(a => a.enabled).length ? '所选窗口多于可用账号，导入后需补录密码或取消多余窗口才能启动。' : selectedWindows.length ? '' : '未选择预约窗口，导入后请先勾选再启动。', message: '按登录账号合并：同名更新、新账号加入、本机其他账号保留。所选窗口、单日分配、跳过日期、本人账号、自动处理已开放计划、重试设置、仪器及主题将替换；执行记录、失败截图和桌面设置保留。导入前自动备份，导入后调度保持暂停。' };
   }
   restore(token) {
     const plan = this.restorePlan;
@@ -214,6 +216,8 @@ class Operations {
     const previous = this.backup('before-restore');
     this.store.data.windowSelectionMigration = 1; this.store.data.windowSelectionManual = true; this.store.data.dailyAssignments = {};
     this.store.data.accounts = plan.accounts; this.store.data.config.windows = plan.windows; this.store.data.config.exclusions = plan.exclusions;
+    this.store.data.config.personalAccountId=plan.personalAccountId;
+    this.store.data.config.catchUpEnabled=plan.catchUpEnabled;
     this.store.data.config.reviewPolicy=plan.reviewPolicy;
     this.store.data.config.retryPolicy = plan.retryPolicy; this.store.data.config.equipment = plan.equipment; this.store.data.config.theme = plan.theme;
     this.store.data.config.retentionPolicy = plan.retentionPolicy;
@@ -239,16 +243,16 @@ class Operations {
     const previous = this.state.network; const next = online ? 'online' : 'offline'; if (previous === next) return;
     this.state.network = next; this.state.networkChangedAt = this.clock(); this.persist();
     if (!online || previous === 'offline') {
-      this.store.event('network', online ? '网络连接已恢复；不会补约过期任务' : '网络连接已断开，可能影响预约');
-      this.systemMessage(online ? 'CellStation · 网络已恢复' : 'CellStation · 网络已断开', online ? '连接已恢复。过期任务不会集中补约；请查看执行记录。' : '本机网络不可用，请检查连接。正在运行的预约可能失败。');
+      this.store.event('network', online ? '网络连接已恢复，计划将按当前设置处理' : '网络连接已断开，可能影响预约');
+      this.systemMessage(online ? 'CellStation · 网络已恢复' : 'CellStation · 网络已断开', online ? '网络已恢复，请查看预约状态。' : '本机网络不可用，请检查连接。正在运行的预约可能失败。');
     }
   }
   suspend() { this.state.suspendedAt = this.clock(); this.persist(); this.store.event('power', '电脑即将休眠，休眠期间不能执行预约'); }
   resume(inferred = false) {
     const gap = this.state.suspendedAt ? this.clock() - this.state.suspendedAt : this.clock() - this.lastTick;
     this.state.suspendedAt = null; this.state.lastResume = this.clock(); this.lastTick = this.clock(); this.persist();
-    this.store.event('power', `${inferred ? '检测到较长运行间隔，可能为休眠或进程暂停' : '电脑已恢复'}，间隔约${Math.max(0, Math.round(gap / 60000))}分钟；过期任务不会补约`);
-    this.systemMessage(inferred ? 'CellStation · 运行已恢复' : 'CellStation · 电脑已恢复', '请查看执行记录；中断期间错过的任务不会集中补约。' + (this.store.data.config.enabled ? '调度继续运行。' : '调度仍保持暂停。'));
+    this.store.event('power', `${inferred ? '检测到较长运行间隔，可能为休眠或进程暂停' : '电脑已恢复'}，间隔约${Math.max(0, Math.round(gap / 60000))}分钟；计划将按当前设置处理`);
+    this.systemMessage(inferred ? 'CellStation · 运行已恢复' : 'CellStation · 电脑已恢复', '请查看执行记录；待处理计划将按当前设置执行。' + (this.store.data.config.enabled ? '调度继续运行。' : '调度仍保持暂停。'));
   }
   monitorTick() {
     const now = this.clock(); if (now - this.lastTick > 90000 && !this.state.suspendedAt) this.resume(true); this.lastTick = now;

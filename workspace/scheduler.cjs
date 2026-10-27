@@ -1,5 +1,5 @@
 'use strict';
-const { generateJobs, windowsFor, shanghaiDate } = require('./schedule-logic.cjs');
+const { generateJobs, windowsFor, shanghaiDate, addDays } = require('./schedule-logic.cjs');
 const { recorder } = require('./timeline.cjs');
 const { slotKey } = require('./equipment.cjs');
 const TERMINAL = new Set(['success', 'already_exists', 'failed', 'needs_review', 'missed']);
@@ -20,10 +20,10 @@ class Scheduler {
     this.releaseTimers = new Map();
     for(const job of Object.values(store.data.jobs))if(job.recovery?.state==='running'&&!['success','already_exists','needs_review'].includes(job.status)){const uncertain=saveAttempted(job);store.job(job,{status:uncertain?'needs_review':'failed',recovery:{...job.recovery,state:uncertain?'stopped':'waiting',nextAt:clock()+RECOVERY_INTERVAL}});}
   }
-  plan(days = 7, includeDisabled = false) {
+  plan(days = 7, includeDisabled = false, releaseDate = shanghaiDate(this.clock())) {
     const accounts = this.store.accounts();
     const existing = new Map(Object.values(this.store.data.jobs).map(j => [slotKey(j), j]));
-    return generateJobs(this.store.data.config, accounts, shanghaiDate(this.clock()), days, true).map(job => {
+    return generateJobs(this.store.data.config, accounts, releaseDate, days, true).map(job => {
       const record = existing.get(slotKey(job)) || this.store.data.jobs[this.store.data.equipmentReplacements?.[slotKey(job)]];
       if (record && record.id !== job.id) return { ...job, ...record, equipment: record.equipment || require('./equipment.cjs').defaultEquipment() };
       const mapping = this.store.assignment(job.date);
@@ -33,6 +33,11 @@ class Scheduler {
       const window = windowsFor(this.store.data.config, job.date).find(w => w.id === job.windowId);
       return { ...job, accountId: lockedId, accountLabel: account?.owner || account?.username || '账号不可用', accountOwner: account?.owner || '', available: Boolean(job.equipmentEnabled && window.enabled && account?.enabled && !job.skipped), locked: Boolean(this.store.data.bindings[`${job.date}|${job.windowId}`]), shuffled: true };
     }).filter(job => includeDisabled || job.available);
+  }
+  catchUpPlan(now) {
+    const config=this.store.data.config,date=shanghaiDate(now),key=JSON.stringify([date,config.windows,config.dateWindows,config.equipments,config.exclusions,this.store.accounts(),this.store.data.assignmentRevision]);
+    if(!this.catchUpCache||this.catchUpCache.key!==key||now-this.catchUpCache.at>=5000||now<this.catchUpCache.at)this.catchUpCache={key,at:now,jobs:this.plan(8,false,addDays(date,-7))};
+    return this.catchUpCache.jobs.filter(j=>j.releaseAt<=now&&Date.parse(`${j.date}T${j.start}:00+08:00`)>now);
   }
   start() {
     this.timer = setInterval(() => { this.tick().catch(() => {}); }, 200);
@@ -49,15 +54,37 @@ class Scheduler {
     const config = this.store.data.config;
     if (!config.enabled) return;
     const now = this.clock();
-    const pending = new Map(this.plan(2).map(j => [j.id, j]));
+    const normal=this.plan(2),late=config.catchUpEnabled===false?[]:this.catchUpPlan(now);
+    const pending = new Map([...normal,...late].map(j => [j.id, j]));
     for (const [id, snapshot] of this.snapshots) pending.set(id, snapshot);
     for (const record of Object.values(this.store.data.jobs)) if (record.recovery?.state === 'waiting') pending.set(record.id,{...record});
+    this.beforeJobs?.(now,[...pending.values()],this.store.data.jobs);
     const startedSlots = new Map(Object.values(this.store.data.jobs).map(j => [slotKey(j), j.id]));
     for (let job of pending.values()) {
       const slotId = startedSlots.get(slotKey(job));
       const occupied = slotId && slotId !== job.id;
       if (occupied && !this.snapshots.has(job.id)) continue;
       const record = this.store.data.jobs[job.id];
+      if(config.catchUpEnabled===false&&record?.recovery?.origin==='catch-up'&&['waiting','running'].includes(record.recovery.state)){
+        if(this.busy.has(job.id))continue;
+        const wasPrepared=this.prepared.has(job.id);this.prepared.delete(job.id);this.snapshots.delete(job.id);
+        this.store.job(job,{status:'skipped',recovery:{...record.recovery,state:'stopped',stopReason:'disabled'},message:'自动补尝试已关闭'});
+        if(wasPrepared)this.launch(job,()=>this.worker.releaseSession?.(job.accountId,job.id));
+        continue;
+      }
+      if(config.catchUpEnabled===false&&record?.recovery?.origin==='catch-up'&&record.recovery.stopReason==='disabled')continue;
+      const overdue=job.releaseAt<=now&&(job.releaseAt<config.enabledAt||now>job.releaseAt+(job.runtime?.config||config).graceSeconds*1000);
+      if(config.catchUpEnabled!==false&&overdue&&Date.parse(`${job.date}T${job.start}:00+08:00`)>now&&!this.busy.has(job.id)&&!record?.recovery?.state?.match(/^(waiting|running)$/)&&(!record||['queued','missed','retrying','ready'].includes(record.status)||(record.status==='skipped'&&record.recovery?.origin==='catch-up'&&record.recovery.stopReason==='disabled'))) {
+        if(saveAttempted(record)){this.store.job(job,{status:'needs_review',message:'已有保存记录，正在核对预约结果'});continue;}
+        if(record?.status==='retrying'&&now<record.retryAt)continue;
+        const higher=normal.some(other=>other.id!==job.id&&other.accountId===job.accountId&&other.releaseAt>=now-60000&&other.releaseAt<=now+config.prewarmSeconds*1000+300000&&!TERMINAL.has(this.store.data.jobs[other.id]?.status)&&(other.releaseAt>job.releaseAt||(other.releaseAt===job.releaseAt&&other.equipmentOrder<job.equipmentOrder)));
+        if(higher||[...this.activeAccounts.values()].includes(job.accountId)||this.externalBusy?.(job.accountId))continue;
+        if(this.snapshots.has(job.id)&&!this.assignmentMatches(job)){this.launch(job,()=>this.discardPreparation(job));continue;}
+        const wasPrepared=this.prepared.has(job.id);this.prepared.delete(job.id);this.snapshots.delete(job.id);
+        job={...job,recovery:{state:'running',phase:'catch-up',origin:'catch-up',attempts:1}};
+        this.store.job(job,{...job,status:'queued',recovery:job.recovery,retryAt:null,retryCount:0,message:'开放时间已过，正在核对网站并处理原计划'});
+        if(wasPrepared){this.launch(job,async()=>{await this.worker.releaseSession?.(job.accountId,job.id);await this.prepare(job);});continue;}
+      }
       if (record?.recovery?.state === 'waiting') {
         if (this.busy.has(job.id)) continue;
         const startsAt=Date.parse(`${job.date}T${job.start}:00+08:00`);
@@ -150,6 +177,7 @@ class Scheduler {
       job.onStep?.('prepare_start', '准备任务：配置与账号已固定');
       const result = await this.worker.prepare(job);
       if (!this.assignmentMatches(job)) { await this.discardPreparation(job); return; }
+      if(this.store.data.config.catchUpEnabled===false&&this.store.data.jobs[job.id]?.recovery?.origin==='catch-up'){this.store.job(job,{status:'skipped',recovery:{...this.store.data.jobs[job.id].recovery,state:'stopped',stopReason:'disabled'},message:'自动补尝试已关闭'});await this.worker.releaseSession?.(job.accountId,job.id);return;}
       if (result.alreadyExists) {
         this.store.job(job, { status: 'already_exists', recovery:this.finishedRecovery(job), reservationId: result.reservationId, message: '网站已有相同预约，未重复提交' });
       } else if (!this.store.data.config.enabled) {
@@ -169,7 +197,9 @@ class Scheduler {
       }
     } catch (error) {
       if (!this.assignmentMatches(job)) { await this.discardPreparation(job); return; }
+      if(this.store.data.config.catchUpEnabled===false&&this.store.data.jobs[job.id]?.recovery?.origin==='catch-up'){this.store.job(job,{status:'skipped',recovery:{...this.store.data.jobs[job.id].recovery,state:'stopped',stopReason:'disabled'},message:'自动补尝试已关闭'});await this.worker.releaseSession?.(job.accountId,job.id);return;}
       if (!this.store.data.config.enabled) { this.store.job(job, { status: 'queued', recovery:this.pausedRecovery(job), diagnosticId: error.diagnosticId, message: '调度已暂停，未提交' }); return; }
+      if(error.code==='OWNERSHIP_UNCERTAIN'){this.store.job(job,{status:'needs_review',recovery:this.finishedRecovery(job,'stopped'),diagnosticId:error.diagnosticId,message:error.message});return;}
       if (this.retry(job, error, 'prepare')) return;
       if (this.deferRecovery(job,error,'prepare')) return;
       this.store.job(job, { status: 'failed', recovery:this.finishedRecovery(job,'stopped'), diagnosticId: error.diagnosticId, message: String(error.message).slice(0, 800) });
@@ -187,6 +217,7 @@ class Scheduler {
       job.onStep?.('release_reached', '已到开放时间，开始填写与提交');
       const result = await this.worker.commit(job, () => {
         if (!this.store.data.config.enabled) throw new Error('调度已暂停，保存未执行');
+        if(this.store.data.config.catchUpEnabled===false&&this.store.data.jobs[job.id]?.recovery?.origin==='catch-up'){const error=new Error('自动补尝试已关闭');error.code='CATCH_UP_DISABLED';throw error;}
         if (!this.assignmentMatches(job)) { const error = new Error('手动分配已修改，旧任务未保存'); error.code = 'ASSIGNMENT_CHANGED'; throw error; }
         const savingAt = this.clock();
         if (savingAt < job.releaseAt) throw new Error('尚未到开放时刻');
@@ -201,8 +232,10 @@ class Scheduler {
       this.store.event('result', `${job.date} ${job.start}–${job.end} · ${job.accountLabel} · ${status === 'success' ? '预约成功' : '已存在'}`);
     } catch (error) {
       const uncertain = this.store.data.jobs[job.id]?.status === 'saving';
+      if(!uncertain&&error.code==='CATCH_UP_DISABLED'){this.store.job(job,{status:'skipped',recovery:{...this.store.data.jobs[job.id].recovery,state:'stopped',stopReason:'disabled'},message:'自动补尝试已关闭'});return;}
       if (!uncertain && !this.assignmentMatches(job)) { await this.discardPreparation(job); return; }
       if (!uncertain && !this.store.data.config.enabled) { this.store.job(job, { status: 'queued', recovery:this.pausedRecovery(job), message: '调度已暂停，保存未执行' }); return; }
+      if (!uncertain&&error.code==='OWNERSHIP_UNCERTAIN'){this.store.job(job,{status:'needs_review',recovery:this.finishedRecovery(job,'stopped'),diagnosticId:error.diagnosticId,message:error.message});return;}
       if (!uncertain && this.retry(job, error, 'commit')) return;
       if (!uncertain && this.deferRecovery(job,error,'commit')) return;
       this.store.job(job, { status: uncertain ? 'needs_review' : 'failed', recovery:this.finishedRecovery(job,'stopped'), diagnosticId: error.diagnosticId, message: uncertain ? `保存结果需复核，程序将立即查询并按设置间隔再查一次，不重复提交预约。${String(error.message).slice(0, 650)}` : String(error.message).slice(0, 800) });
@@ -211,11 +244,11 @@ class Scheduler {
   }
   retry(job, error, phase) {
     const record = this.store.data.jobs[job.id];
-    if (record?.recovery?.state==='running') return false;
+    if (record?.recovery?.state==='running'&&record.recovery.phase!=='catch-up') return false;
     const count = record?.retryCount || 0;
     const maxRetries = (job.runtime?.config || this.store.data.config).retryPolicy?.taskRetries ?? 2;
     const retryAt = this.clock() + (count ? 5000 : 2000);
-    if (error.retryable === false || !retryable(error) || count >= maxRetries || !this.store.data.config.enabled || retryAt > job.releaseAt + (job.runtime?.config || this.store.data.config).graceSeconds * 1000) return false;
+    if (error.retryable === false || !retryable(error) || count >= maxRetries || !this.store.data.config.enabled || retryAt > this.deadline(job)) return false;
     this.prepared.delete(job.id);
     this.store.job(job, { status: 'retrying', retryAt, retryCount: count + 1, retryLimit: maxRetries, retryPhase: phase, diagnosticId: error.diagnosticId, message: `保存前遇到短暂错误，将有限重试（${count + 1}/${maxRetries}）` });
     this.store.event('retry', `${job.date} ${job.start} · ${job.accountLabel} · 保存前有限重试${count + 1}/${maxRetries}`);

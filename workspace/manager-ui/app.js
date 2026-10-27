@@ -22,31 +22,33 @@ function reviewActions(job) {
   }
   return root;
 }
-const steps = { server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'保存阶段POST请求', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
+const steps = { server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'预约保存请求已发送', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
 let state, preview, restoreToken, view = 'overview', controlPending = false, offset = 0;
 let previewRequest = 0, summaryRequest = 0;
-const dateFollow = new DateFollow(), dateIds = ['plan-date','summary-date','exclusion-date','assignment-date'];
+const dateFollow = new DateFollow(), siteDateFollow=new DateFollow(0), dateIds = ['plan-date','summary-date','exclusion-date','assignment-date','site-date'];
+const dateModel=id=>id==='site-date'?siteDateFollow:dateFollow;
 const dateButtons = new Map();
 function syncDates(now = Date.now() + offset) {
   const changed = [];
   for (const id of dateIds) {
-    const input = $('#'+id), value = dateFollow.next(id,input.value,now,document.activeElement===input);
+    const input = $('#'+id), model=dateModel(id), value = model.next(id,input.value,now,document.activeElement===input);
     if (value !== input.value) { input.value = value; changed.push(id); }
-    const follow = dateFollow.follows(id), action = dateButtons.get(id);
-    action.textContent = follow ? '跟随今天＋7天' : '恢复跟随今天＋7天';
+    const follow = model.follows(id), action = dateButtons.get(id), target=id==='site-date'?'今天':'今天＋7天';
+    action.textContent = follow ? '跟随'+target : '恢复跟随'+target;
     action.setAttribute('aria-pressed',String(follow));
-    action.title = follow ? '按北京时间，跨天自动翻到当天＋7天；可手动查看其他日期' : '当前为手动日期；点击恢复跨天自动翻页';
+    action.title = follow ? '按北京时间自动更新日期；可选择其他日期' : '当前为手动日期；点击恢复自动更新';
   }
   if (!state) return;
   if (changed.includes('plan-date')) { preview = null; previewRequest++; renderPlan(); previewPlan(); }
   if (changed.includes('summary-date')) loadSummary();
   if (changed.includes('assignment-date')) loadAssignment(true).catch(e=>toast(e.message,true));
+  if (changed.includes('site-date')&&view==='site')startSiteRead();
 }
 for (const id of dateIds) {
-  const input = $('#'+id), action = button('跟随今天＋7天',()=>{dateFollow.resume(id);syncDates();},'date-follow-button');
+  const input = $('#'+id), action = button('跟随日期',()=>{dateModel(id).resume(id);syncDates();},'date-follow-button');
   action.setAttribute('aria-label',(input.getAttribute('aria-label')||input.closest('label')?.childNodes[0]?.textContent.trim()||'目标预约日期')+'：恢复自动跟随');
   input.insertAdjacentElement('afterend',action);dateButtons.set(id,action);
-  input.addEventListener('change',()=>{dateFollow.edit(id,input.value,Date.now()+offset);syncDates();});
+  input.addEventListener('change',()=>{dateModel(id).edit(id,input.value,Date.now()+offset);syncDates();if(id==='site-date'&&view==='site')startSiteRead();});
   input.addEventListener('blur',()=>syncDates());
 }
 const dirty = new Set(), timers = new Map(), revisions = new Map();
@@ -94,7 +96,7 @@ function render() {
   const control=$('#control-button'); control.textContent=(state.pendingStart||controlPending)?'取消启动':state.config.enabled?'暂停调度':'启动调度'; control.disabled=false;
   const network=state.operations?.network;
   const notices=[];if(network==='offline')notices.push('网络已断开，可能影响预约。请检查连接。');if(state.config.enabled&&!selectedCount)notices.push('尚未勾选预约窗口；请前往“时段与随机分配”选择。');if(selectedCount>enabled.length)notices.push('所选窗口多于启用账号，未分配的窗口不会执行；请调整窗口或启用更多账号。');$('#runtime-warning').hidden=!notices.length;$('#runtime-warning').textContent=notices.join(' ');
-  window.cellStationRenderV100?.(state); renderSettings(); renderAccounts(); renderWindows(); renderAssignment(); if(view==='windows')loadAssignment().catch(e=>toast(e.message,true)); renderPlan(); renderHistory(); renderHealth(); renderExclusions(); renderActivity(); updateClock();
+  window.cellStationRenderV100?.(state); renderSettings(); renderPersonal(); renderSite(); renderAccounts(); renderWindows(); renderAssignment(); if(view==='windows')loadAssignment().catch(e=>toast(e.message,true)); renderPlan(); renderHistory(); renderHealth(); renderExclusions(); renderActivity(); updateClock();
   $('#desktop-settings-hint').hidden=state.desktop;
   $('.local-badge').textContent=state.desktop?'桌面版':'本机服务';
 }
@@ -109,12 +111,49 @@ function renderSettings() {
   if(!dirty.has('theme')) $('#setting-theme').value=state.config.theme || 'system'; theme();
   if(!dirty.has('retention')){const policy=state.config.retentionPolicy;$('#setting-retention-enabled').checked=policy.enabled;$('#setting-compress-days').value=policy.compressAfterDays;$('#setting-delete-days').value=policy.deleteAfterDays;}
   const maintenance=state.operations?.retention;$('#retention-status').textContent=maintenance?maintenance.error?'上次维护未完成：'+maintenance.error:`上次维护 ${fmt(maintenance.at,true)} · 压缩 ${maintenance.compressed||0} 项 · 清理 ${maintenance.deleted||0} 项；后台维护避开临近预约时段。`:'默认7天压缩、30天清理；后台低优先级维护，避开临近预约时段。';
+  if(!dirty.has('catch-up'))$('#setting-catch-up').checked=state.config.catchUpEnabled!==false;
   if(!dirty.has('review-policy'))$('#setting-review-interval').value=state.config.reviewPolicy.retryIntervalMinutes;
   if(!dirty.has('retry')) { $('#setting-task-retries').value=state.config.retryPolicy.taskRetries; $('#setting-captcha-retries').value=state.config.retryPolicy.captchaRetries; }
   $('#startup-status').textContent=d?.startupBlocked?'启动项已被Windows禁用':d?.autoStart?'已启用 · 当前Windows用户':'已关闭';
   $('#retry-policy-note').textContent='修改后自动保存；当前任务沿用开始时的次数，后续任务使用新设置。0表示关闭短间隔重试；网站恢复重试另按5分钟执行。';
   $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时立即复核，未确认则间隔${state.config.reviewPolicy.retryIntervalMinutes}分钟再查一次；仍未确认将明确提醒你自主复核，不会重复提交。`;
 }
+let personalAccountSignature,personalEquipmentSignature;
+function renderPersonal(){
+  const account=$('#personal-account'),equipment=$('#personal-equipment');
+  const accounts=state.accounts,items=state.config.equipments||[];
+  const accountKey=JSON.stringify([accounts,state.config.personalAccountId]);
+  if(accountKey!==personalAccountSignature&&!dirty.has('personal-account')){
+    personalAccountSignature=accountKey;account.replaceChildren();const placeholder=make('option','','请选择本人账号');placeholder.value='';account.append(placeholder);
+    for(const a of accounts){const option=make('option','',(a.owner||'未备注使用人')+' / '+a.username+(a.enabled?'':'（已停用）'));option.value=a.id;account.append(option);}
+    account.value=state.config.personalAccountId||'';
+  }
+  const equipmentKey=JSON.stringify(items);
+  if(equipmentKey!==personalEquipmentSignature){const previous=equipment.value;personalEquipmentSignature=equipmentKey;equipment.replaceChildren();for(const e of items){const option=make('option','',e.equipmentName+(e.enabled?'':'（已停用）'));option.value=String(e.equipmentId);equipment.append(option);}equipment.value=items.some(e=>String(e.equipmentId)===previous)?previous:String(items.find(e=>e.enabled)?.equipmentId||items[0]?.equipmentId||'');}
+  $('#open-personal-site').disabled=!account.value||!equipment.value;
+}
+$('#personal-account').addEventListener('change',()=>{const id=$('#personal-account').value||null;$('#open-personal-site').disabled=!id||!$('#personal-equipment').value;autosave('personal-account',()=>api('personal-account',{accountId:id},'PUT'),0);});
+$('#personal-equipment').addEventListener('change',()=>{$('#open-personal-site').disabled=!$('#personal-account').value||!$('#personal-equipment').value;});
+$('#open-personal-site').addEventListener('click',async()=>{const button=$('#open-personal-site');button.disabled=true;try{await window.cellStationFlush();const result=await api('website/open-personal',{equipmentId:Number($('#personal-equipment').value)});toast(result.message,false,result.ready?'':'review');}catch(e){toast(e.message,true);}finally{button.disabled=false;}});
+let siteRequest=0,siteError=null,siteStarting=false;
+async function startSiteRead(){
+  if(!state||!$('#site-date').value)return;const date=$('#site-date').value,request=++siteRequest;
+  siteError=null;siteStarting=true;renderSite();
+  try{await api('website/read',{date});if(request===siteRequest)await refresh();}
+  catch(e){if(request===siteRequest){siteError={date,message:e.message};toast(e.message,true);}}
+  finally{if(request===siteRequest){siteStarting=false;renderSite();}}
+}
+function renderSite(){
+  const result=state.siteAppointments,date=$('#site-date').value;if(!result||result.date!==date||siteError?.date===date){$('#site-rows').replaceChildren();$('#site-errors').replaceChildren();$('#site-errors').hidden=true;$('#site-empty').hidden=true;$('#site-summary').textContent=siteError?.date===date?siteError.message:'正在读取所选日期的预约…';$('#refresh-site').disabled=siteStarting;return;}
+  const loading=result.status==='loading';$('#refresh-site').disabled=loading||siteStarting;
+  $('#site-summary').textContent=loading?'正在读取网站预约…':`${result.message||''}${result.checkedAt?' · 更新于 '+fmt(result.checkedAt,true):''}${result.total?` · 已核实 ${result.identified}/${result.total} 个账号`:''}`;
+  const root=$('#site-rows');root.replaceChildren();
+  const time=value=>day(value)==result.date?fmt(value).slice(0,5):fmt(value,true).slice(0,16);
+  for(const x of result.rows||[]){const row=make('tr');row.append(make('td','',x.equipmentName),make('td','',time(x.start)+'–'+time(x.end)),make('td','',x.owner),make('td','membership-'+x.membership,({ours:'是',other:'否',unknown:'待确认'})[x.membership]||'待确认'));root.append(row);}
+  $('#site-empty').hidden=loading||(result.rows||[]).length>0;$('#site-empty').textContent=result.status==='complete'?'该日期暂无预约':'暂无可显示的预约';
+  const errors=$('#site-errors');errors.hidden=!result.errors?.length;errors.replaceChildren();for(const message of result.errors||[])errors.append(make('p','',message));
+}
+$('#refresh-site').addEventListener('click',startSiteRead);
 let accountsSignature;
 function renderAccounts() {
   if(dirty.has('account-toggle')) return;
@@ -210,13 +249,10 @@ function renderAssignment(force=false){
     for(const a of state.accounts.filter(a=>a.enabled||a.id===current.mapping[w.id])){const option=make('option','',(a.owner||'未备注使用人')+' / '+a.username);option.value=a.id;option.disabled=!a.enabled||!a.hasPassword;owner.append(option);}
     owner.value=current.mapping[w.id]||'';owner.disabled=!isSelected;
     owner.addEventListener('change',()=>{const accountId=owner.value,at=current.date;autosave('assignment',()=>changeAssignment('account',{date:at,windowId:w.id,accountId}),0);});
-    const time=make('select');time.setAttribute('aria-label',w.start+'–'+w.end+' 调整时间段');
-    for(const target of state.windows){const option=make('option','',target.start+'–'+target.end+(target.id!==w.id?(current.windows.find(b=>b.id===target.id).enabled?'（交换账号）':'（仅此日移动）'):''));option.value=target.id;time.append(option);}
-    time.value=w.id;time.disabled=!isSelected||!current.mapping[w.id];time.addEventListener('change',()=>{const toId=time.value,at=current.date;autosave('assignment',()=>changeAssignment('move',{date:at,fromId:w.id,toId}),0);});
-    const accountCell=make('td');accountCell.append(owner);const timeCell=make('td');timeCell.append(time);
-    row.append(make('td','',w.start+'–'+w.end),accountCell,timeCell,make('td','good',current.mapping[w.id]?'随时可调整':'账号不足，请启用账号'));root.append(row);
+    const accountCell=make('td');accountCell.append(owner);
+    row.append(make('td','',w.start+'–'+w.end),accountCell,make('td','good',current.mapping[w.id]?'已分配':'请启用账号'));root.append(row);
   }
-  if(!root.children.length){const row=make('tr'),cell=make('td','','请先在上方勾选每日预约窗口');cell.colSpan=4;row.append(cell);root.append(row);}
+  if(!root.children.length){const row=make('tr'),cell=make('td','','请先在上方勾选每日预约窗口');cell.colSpan=3;row.append(cell);root.append(row);}
 }
 async function changeAssignment(route,data){
   if(!assignmentState||assignmentState.date!==data.date)throw new Error('目标日期已变化，请重新选择');
@@ -291,7 +327,7 @@ for(const id of ['close-dialog','cancel-dialog'])$('#'+id).addEventListener('cli
 $('#account-dialog').addEventListener('cancel',e=>{e.preventDefault();$('#close-dialog').click();});
 $('#account-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;try{const data={username:f.elements.username.value,owner:f.elements.owner.value,password:f.elements.password.value,enabled:f.elements.enabled.checked};await api('accounts',data);f.elements.password.value='';$('#account-dialog').close();preview=null;await refresh();toast('账号已添加');}catch(e){toast(e.message,true);}});
 $('#add-account').addEventListener('click',()=>editAccount());$('#empty-add-account').addEventListener('click',()=>editAccount());
-for(const node of document.querySelectorAll('.nav'))node.addEventListener('click',()=>{view=node.dataset.view;document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===node));document.querySelectorAll('.view').forEach(n=>n.classList.toggle('active',n.id==='view-'+view));const text=node.textContent.replace(/[◈◎▦⊘≡✓▤⚙0-9]/g,'').trim();$('#page-title').textContent=text;$('#breadcrumb').textContent=text;$('#page-description').textContent=view==='settings'?'修改后自动保存；运行过程中也可编辑，后续任务使用新配置。':view==='windows'?'勾选预约窗口后，每日从启用账号中随机分配，无需固定绑定账号。':'本机后台运行，每次半小时，按时预约。';if(view==='reports')loadSummary();if(view==='windows')loadAssignment().catch(e=>toast(e.message,true));});
+for(const node of document.querySelectorAll('.nav'))node.addEventListener('click',()=>{view=node.dataset.view;document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===node));document.querySelectorAll('.view').forEach(n=>n.classList.toggle('active',n.id==='view-'+view));const text=node.textContent.replace(/[◈◎▦⊘≡✓▤⚙0-9]/g,'').trim();$('#page-title').textContent=text;$('#breadcrumb').textContent=text;$('#page-description').textContent=view==='settings'?'修改后自动保存；运行过程中也可编辑，后续任务使用新配置。':view==='windows'?'勾选预约窗口后，每日从启用账号中随机分配，无需固定绑定账号。':'本机后台运行，每次半小时，按时预约。';if(view==='reports')loadSummary();if(view==='site')startSiteRead();if(view==='windows')loadAssignment().catch(e=>toast(e.message,true));});
 async function control(enabled){await window.cellStationFlush();if(enabled){controlPending=true;render();}try{await api('control',{enabled});toast(enabled?'调度已启动；实际任务准备时连接网站并登录':'调度已暂停');}finally{controlPending=false;await refresh();}}
 $('#control-button').addEventListener('click',()=>control(!(state.config.enabled||state.pendingStart||controlPending)).catch(e=>toast(e.message,true)));
 $('#cancel-start').addEventListener('click',()=>control(false).catch(e=>toast(e.message,true)));
@@ -299,6 +335,7 @@ async function previewPlan(){const date=$('#plan-date').value,request=++previewR
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
 for(const [id,key] of [['setting-autostart','autoStart'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
+$('#setting-catch-up').addEventListener('change',()=>{const enabled=$('#setting-catch-up').checked;autosave('catch-up',()=>api('catch-up',{enabled},'PUT'),0);});
 function saveReviewPolicy(){const e=$('#setting-review-interval'),value=Number(e.value);if(!e.value||!e.checkValidity()||!Number.isSafeInteger(value)||value<1){const pending=timers.get('review-policy');if(pending)clearTimeout(pending.timer);timers.delete('review-policy');revisions.set('review-policy',(revisions.get('review-policy')||0)+1);dirty.add('review-policy');saveErrors.set('review-policy','再次复核间隔需为正整数分钟');savedState();return;}autosave('review-policy',()=>api('review-policy',{retryIntervalMinutes:value},'PUT'));}
 $('#setting-review-interval').addEventListener('input',saveReviewPolicy);
 function saveRetries(){const a=$('#setting-task-retries'),b=$('#setting-captcha-retries');if(!a.value||!b.value||!a.checkValidity()||!b.checkValidity()){const pending=timers.get('retry');if(pending)clearTimeout(pending.timer);timers.delete('retry');revisions.set('retry',(revisions.get('retry')||0)+1);dirty.add('retry');saveErrors.set('retry','重试次数需为0至20的整数');savedState();return;}const policy={taskRetries:Number(a.value),captchaRetries:Number(b.value)};autosave('retry',()=>api('retry-policy',policy,'PUT'));}
@@ -342,7 +379,7 @@ $('#restore-file').addEventListener('change',async e=>{
       make('p','',`新增 ${r.newAccounts} 个账号 · 更新 ${r.updatedAccounts} 个同名账号 · 保留 ${r.retainedAccounts} 个本机其他账号 · ${r.needsPassword} 个需重录密码`));
     const wrap=make('div','table-wrap'),table=make('table'),head=make('thead'),tr=make('tr');for(const text of ['账号 / 使用人','处理方式','密码处理','导入后状态'])tr.append(make('th','',text));head.append(tr);table.append(head);
     const body=make('tbody');for(const a of r.accountChanges){const row=make('tr');row.append(make('td','',a.username+(a.owner?' / '+a.owner:'')),make('td','',a.action),make('td','',a.password),make('td','',a.enabled?'启用':'停用'));body.append(row);}table.append(body);wrap.append(table);root.append(wrap);
-    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；再次复核间隔 ${r.reviewPolicy.retryIntervalMinutes} 分钟；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
+    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；再次复核间隔 ${r.reviewPolicy.retryIntervalMinutes} 分钟；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',`本人账号：${state.accounts.find(a=>a.id===r.personalAccountId)?.username||'未选择'}；自动处理已开放计划：${r.catchUpEnabled?'开启':'关闭'}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
     if(r.dateDetails?.length){const details=make('details','backup-date-plans'),summary=make('summary','',`查看单日调整：${r.customDates}天自定义时间段、${r.assignmentDays}天已保存分配`);details.append(summary);for(const d of r.dateDetails){details.append(make('p','',d.date+' · '+d.windows.join('、')+' · '+d.accounts.map(a=>(state.windows.find(w=>w.id===a.windowId)?.start||a.windowId)+' '+a.username).join('；')));}root.append(details);}
     if(r.selectionWarning)root.append(make('p','bad',r.selectionWarning));$('#confirm-restore').hidden=false;$('#cancel-restore').hidden=false;
   }catch(error){clearRestore();$('#restore-result').hidden=false;$('#restore-result').textContent='无法预览：'+error.message;toast(error.message,true);}finally{e.target.value='';}
@@ -352,7 +389,7 @@ $('#confirm-restore').addEventListener('click',async()=>{
   try{await window.cellStationFlush();const r=await api('backup/restore',{token:restoreToken});clearRestore();const result=$('#restore-result');result.replaceChildren(make('strong','','配置导入成功'),make('p','',`${r.message} 合并${r.importedAccounts}个账号，${r.needsPassword}个需要重录密码，每日通用窗口${r.selectedWindows}个，单日自定义${r.customDates||0}天，已保存分配${r.assignmentDays||0}天。`),make('p','','导入前配置的恢复备份：'),make('p','export-path',r.previousBackup));result.hidden=false;await refresh();toast('配置已导入，调度保持暂停');}
   catch(e){clearRestore();$('#restore-result').hidden=false;$('#restore-result').textContent='导入未完成：'+e.message+'。请重新选择文件预览。';toast(e.message,true);}finally{button.disabled=false;}
 });
-for(const [id,route] of [['open-exports','exports/open'],['open-booking-site','desktop/open-website']])$('#'+id).addEventListener('click',async()=>{try{await api(route,{});}catch(e){toast(e.message,true);}});
+for(const [id,route] of [['open-exports','exports/open']])$('#'+id).addEventListener('click',async()=>{try{await api(route,{});}catch(e){toast(e.message,true);}});
 function hashView(){const n=document.querySelector('.nav[data-view="'+location.hash.slice(1).replace(/[^a-z]/g,'')+'"]');if(n)n.click();}
 window.addEventListener('focus',()=>{if(state)syncDates();});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state)syncDates();});

@@ -9,7 +9,7 @@ const base = path.resolve(__dirname, '../work/tests'); fs.mkdirSync(base, { recu
 const vault = { protect: async s => 'test:' + s, unprotect: async s => { if (!s.startsWith('test:')) throw new Error('foreign'); return s.slice(5); } };
 const windows = (...ids) => WINDOWS.map(w => ({ id: w.id, enabled: ids.includes(w.id) }));
 async function fixture(n = 1) {
-  const root = fs.mkdtempSync(path.join(base, 'v08-')), store = new ManagerStore(path.join(root, 'work/manager'), vault);
+  const root = fs.mkdtempSync(path.join(base, 'v08-')), store = new ManagerStore(path.join(root, 'work/manager'), vault); store.data.config.catchUpEnabled = false;
   for (let i = 0; i < n; i++) await store.saveAccount({ username: 'test' + i, owner: '模拟使用人' + i, password: 'dummy' });
   return { root, store, op: new Operations({ root, store, worker: {} }) };
 }

@@ -11,7 +11,7 @@ const { createManager } = require('./manager-server.cjs');
 const base = path.join(__dirname, '..', 'work', 'tests'); fs.mkdirSync(base, { recursive: true });
 const vault = { protect: async value => Buffer.from(value).toString('base64'), unprotect: async value => Buffer.from(value, 'base64').toString() };
 function fixture() {
-  const root = fs.mkdtempSync(path.join(base, 'ops-')); const store = new ManagerStore(path.join(root, 'work', 'manager'), vault);
+  const root = fs.mkdtempSync(path.join(base, 'ops-')); const store = new ManagerStore(path.join(root, 'work', 'manager'), vault); store.data.config.catchUpEnabled = false;
   store.data.accounts = WINDOWS.map((_w, i) => ({ id: `a${i}`, label: `账号${i}`, username: `test${i}`, enabled: true, revision: 1, passwordCipher: Buffer.from('local-dummy').toString('base64') }));
   store.setWindows(WINDOWS.map(w => ({id: w.id, enabled: true})));
   store.persist();

@@ -7,7 +7,7 @@
     $('#wechat-status').textContent=w?.error|| (w?.hasKey?`密钥已保存 · ${w.enabled?'通知已开启':'通知未开启'}${w.lastSentAt?' · 最近发送 '+fmt(Date.parse(w.lastSentAt),true):''}`:'尚未配置微信推送服务');
     const u=current.updates;$('#update-auto').disabled=!u;
     if(u){if(!dirty.has('updates')){$('#update-auto').checked=u.auto;$('#update-mirrors').value=u.mirrors.join('\n');}$('#update-status').textContent=u.message;$('#update-progress').value=u.progress||0;$('#update-install').hidden=!u.availableVersion;$('#update-install').disabled=['installing','downloading','checking'].includes(u.status);}
-    else $('#update-status').textContent='自动更新在独立EXE中启用；本地开发服务可手动构建。';
+    else $('#update-status').textContent='自动更新暂不可用。';
     const key=JSON.stringify(current.config.equipments);if(key===deviceKey||dirty.has('equipments'))return;deviceKey=key;
     const root=$('#equipment-list');root.replaceChildren();
     for(const [index,item]of current.config.equipments.entries()){

@@ -90,7 +90,7 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
   return jobs.sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
 }
 function defaults() {
-  return { enabled: false, enabledAt: null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
+  return { enabled: false, enabledAt: null, catchUpEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
     equipment: require('./equipment.cjs').defaultEquipment(), theme: 'system', windows: WINDOWS.map(w => ({ id: w.id, enabled: true })) };
 }
 function shuffleAssignments(config, accounts, locked = {}, randomInt = require('node:crypto').randomInt) {

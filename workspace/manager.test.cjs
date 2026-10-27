@@ -13,6 +13,7 @@ const directory = () => fs.mkdtempSync(path.join(tempRoot, 'manager-'));
 const fakeVault = { protect: async text => Buffer.from(text).toString('base64'), unprotect: async text => Buffer.from(text, 'base64').toString() };
 function configuredStore() {
   const store = new ManagerStore(directory(), fakeVault);
+  store.data.config.catchUpEnabled = false;
   store.data.accounts = WINDOWS.map((w, i) => ({ id: `a${i}`, label: `账号${i + 1}`, username: `user${i + 1}`, enabled: true, passwordCipher: 'test' }));
   store.setWindows(WINDOWS.map(w => ({id: w.id, enabled: true})));
   store.persist();
@@ -65,7 +66,7 @@ test('scheduler prepares ahead, submits each job once at release and preserves a
   assert.equal(new Set(saves.map(j => j.id)).size, 20);
   for (let i = 0; i < 5; i++) assert.equal(saves.filter(j => j.accountId === `a${i}`).length, 4);
 });
-test('enabling never backfills earlier releases and restart protects uncertain saves', async () => {
+test('disabled catch-up never backfills earlier releases and restart protects uncertain saves', async () => {
   const store = configuredStore(); let now = Date.parse('2026-10-22T10:00:01+08:00'); store.setEnabled(true, now);
   let prepares = 0;
   const scheduler = new Scheduler(store, { prepare: async () => { prepares++; return {}; }, close: async () => {} }, () => now);

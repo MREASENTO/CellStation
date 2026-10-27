@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const{ManagerStore}=require('./manager-store.cjs'),{Scheduler}=require('./scheduler.cjs'),{Operations}=require('./operations.cjs'),{WechatNotifications}=require('./wechat-notifications.cjs'),{AppUpdater,verifiedRelease,canonical,newer}=require('./app-updater.cjs');
 const base=path.resolve(__dirname,'../work/tests');fs.mkdirSync(base,{recursive:true});
 const dir=()=>fs.mkdtempSync(path.join(base,'v100-')),vault={protect:async s=>'encrypted:'+s,unprotect:async s=>s.slice(10)};
-async function fixture(){const root=dir(),store=new ManagerStore(root,vault);await store.saveAccount({username:'mock-account',owner:'模拟使用人',password:'not-real'});return{root,store};}
+async function fixture(){const root=dir(),store=new ManagerStore(root,vault);store.data.config.catchUpEnabled=false;await store.saveAccount({username:'mock-account',owner:'模拟使用人',password:'not-real'});return{root,store};}
 test('multiple devices have independent task ids and summary results; a successful first device never masks a second',async()=>{
   const{root,store}=await fixture();store.setEquipments([{equipmentId:51,equipmentName:'模拟设备A'},{equipmentId:52,equipmentName:'模拟设备B'}]);
   const now=Date.parse('2026-10-22T07:00:00+08:00'),sc=new Scheduler(store,{},()=>now),plan=sc.plan(1);assert.equal(plan.length,8);assert.equal(new Set(plan.map(j=>j.id)).size,8);
