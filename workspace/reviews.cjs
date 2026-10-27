@@ -120,7 +120,7 @@ class Reviews {
         const userId=href?.match(/index[.](\d+)/)?.[1];if(!userId)throw new Error('无法确认登录身份，未更新预约结果');
         const identity=require('./site-identity.cjs');identity.recordIdentity(this.store,target.account.id,userId,target.account);
         const rows=await this.components(page,plan.weekStart);
-        const match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)]);
+        const match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)],this.store.data.config.teamMembers||[]);
         return this.finish(job,match,'未查到匹配预约',automatic,stage,startedAt);
       } catch(error) {
         const diagnosticId=await captureFailure(this.root,job,'recheck',error,this.sessions.get(id)?.page).catch(()=>undefined);

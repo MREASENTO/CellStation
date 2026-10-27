@@ -13,6 +13,7 @@ class ManagerStore {
     this.data.bindings ||= {};
     this.data.dailyAssignments ||= {};
     this.data.config.shuffleDaily = true;
+    this.data.config.teamMembers=require('./site-identity.cjs').validateTeam(this.data.config.teamMembers||[]);
     if(this.data.config.catchUpEnabled===undefined)this.data.config.catchUpEnabled=true;
     if(typeof this.data.config.catchUpEnabled!=='boolean')throw new Error('自动补尝试设置无效');
     this.data.config.equipment ||= require('./equipment.cjs').defaultEquipment();
@@ -209,6 +210,20 @@ class ManagerStore {
   setRetentionPolicy(policy) {
     this.data.config.retentionPolicy = require('./retention.cjs').validateRetention(policy);
     this.event('config', `截图与文件日志保留规则已保存：${policy.enabled ? `${policy.compressAfterDays}天压缩、${policy.deleteAfterDays}天清理` : '自动维护已关闭'}`);
+  }
+  saveTeamMember(input) {
+    if(!input||typeof input!=='object')throw new Error('团队人员信息无效');
+    const id=input.id||crypto.randomUUID(),current=this.data.config.teamMembers.find(m=>m.id===id);
+    if(input.id&&!current)throw new Error('团队人员不存在');
+    const member={id,name:input.name,profileId:input.profileId||''};
+    const next=this.data.config.teamMembers.filter(m=>m.id!==id).concat(member);
+    this.data.config.teamMembers=require('./site-identity.cjs').validateTeam(next);
+    this.event('config',current?'团队人员信息已更新':'已添加团队人员');
+    return this.data.config.teamMembers.find(m=>m.id===id);
+  }
+  removeTeamMember(id) {
+    if(!this.data.config.teamMembers.some(m=>m.id===id))throw new Error('团队人员不存在');
+    this.data.config.teamMembers=this.data.config.teamMembers.filter(m=>m.id!==id);this.event('config','已移除团队人员');
   }
   setPersonalAccount(id) {if(id!==null&&(typeof id!=='string'||!this.data.accounts.some(a=>a.id===id)))throw new Error('请选择已保存的账号');this.data.config.personalAccountId=id;this.event('config',id?'本人账号已设置':'本人账号已取消');}
   setCatchUpEnabled(enabled) {if(typeof enabled!=='boolean')throw new Error('自动补尝试设置无效');this.data.config.catchUpEnabled=enabled;this.event('config',enabled?'已开启已开放计划的自动补尝试':'已关闭已开放计划的自动补尝试');}
