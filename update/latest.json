@@ -1,14 +1,14 @@
 {
   "release": {
-    "version": "1.0.6",
-    "url": "https://github.com/MREASENTO/CellStation/releases/download/v1.0.6/CellStation-v1.0.6-win64.zip",
-    "sha256": "f517c75b7697797272de2dcf4394547d2bcfd66ed6af32de36cc478036ac4aa9",
-    "size": 368455133,
-    "publishedAt": "2026-10-27T10:52:40.865Z",
-    "gitRevision": "c7ba0de9720d3963b31e5b8fefd6e1340c3141fc",
-    "gitRef": "app-v1.0.6",
+    "version": "1.0.7",
+    "url": "https://github.com/MREASENTO/CellStation/releases/download/v1.0.7/CellStation-v1.0.7-win64.zip",
+    "sha256": "8191d104fb118b17756ac14306687cd115c31a233d7415b3da8a28426d20d9f4",
+    "size": 368459519,
+    "publishedAt": "2026-10-27T11:13:32.761Z",
+    "gitRevision": "a559e53de2289295f031365d30e63c0464b45da6",
+    "gitRef": "app-v1.0.7",
     "gitRuntimeId": "c90e386c9bc2a98746c9be7adcfc44fa2a19e3065badad4da606522f760c17ca",
-    "gitManifestSha256": "234563fde1e049bdb191e03203cf56a152a80bc7c9af51743a4042dc5ef28081"
+    "gitManifestSha256": "f9d2384e89b8b89c395e45ec1a17f5f7af1ee79094b0d70ad7d2258c494d0a12"
   },
-  "signature": "z+6mXYQeO3Z9PKmkDX8XHTjHG6kQ7ilF8eKgVc9RnuabcikqYOGLzIj8GOhDASzC9JU/cB7wbYgo5hIYXu9eBQ=="
+  "signature": "yUpulwhukNltZdH16sEMgpEFNKXsLWnT/A5l5PkUr3h2McBrgN7iBNnfsLhI1YfAQqh8gEPZ/e4mwvERdn6cBw=="
 }
