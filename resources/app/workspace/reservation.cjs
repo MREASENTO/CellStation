@@ -24,12 +24,12 @@ async function checkAvailability(page, plan, options = {}) {
   if (!userId) throw new Error('无法确认当前登录账号');
   await options.onIdentity?.(userId);
   const components=await calendarComponents(page, weekStart),assessment = assessComponents(components, plan, userId);
-  const {coveringOurs,oneOwner}=require('./site-identity.cjs');
-  const duplicate=coveringOurs(components,plan,[userId,...(options.profileIds?.()||[])]);
+  const {coveringOurs,oneOwner,teamMatch}=require('./site-identity.cjs');
+  const duplicate=coveringOurs(components,plan,[userId,...(options.profileIds?.()||[])],options.teamMembers?.()||[]);
   if (duplicate) return { ...assessment, duplicate, userId, weekStart };
   if (assessment.conflicts.length) {
     const known=new Set([userId,...(options.profileIds?.()||[])]),conflicts=assessment.conflicts;
-    const uncertain=conflicts.some(c=>!oneOwner(c.content)||known.has(oneOwner(c.content)))||!options.identitiesComplete?.();
+    const uncertain=conflicts.some(c=>!oneOwner(c.content)||known.has(oneOwner(c.content))||teamMatch(c.content,options.teamMembers?.()||[]))||!options.identitiesComplete?.();
     const error=new Error(uncertain?'该时段已有预约，账号归属或覆盖范围需要核对':'目标时段已被占用');
     if(uncertain)error.code='OWNERSHIP_UNCERTAIN';error.retryable=false;throw error;
   }

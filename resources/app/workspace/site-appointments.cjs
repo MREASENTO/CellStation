@@ -4,30 +4,26 @@ const { openEquipment,calendarComponents }=require('./reservation.cjs');
 const { equipmentList,rulesFor }=require('./equipment.cjs');
 const { validDate }=require('./schedule-logic.cjs');
 const { normalizedEnd }=require('./booking-logic.cjs');
-const { oneOwner,knownIdentities,recordIdentity }=require('./site-identity.cjs');
+const { oneOwner,ownerName,teamMatch,knownIdentities,recordIdentity }=require('./site-identity.cjs');
 const { safeError }=require('./support-files.cjs');
 function weekStart(date) {
   const day=Date.parse(date+'T00:00:00+08:00')/1000;
   return day-new Date(day*1000+8*3600000).getUTCDay()*86400;
 }
-function ownerName(content) {
-  const match=String(content||'').match(/<a\b[^>]*href\s*=\s*["'][^"']*profile\/index[.]\d+[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-  return match?match[1].replace(/<[^>]*>/g,'').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').trim().slice(0,100):'';
-}
-function siteRows(date,equipment,components) {
-  const start=Date.parse(date+'T00:00:00+08:00')/1000,end=start+86400;
+function siteRows(date,equipment,components,days=1) {
+  const start=Date.parse(date+'T00:00:00+08:00')/1000,end=start+days*86400;
   return components.flatMap(c=>{
     const from=Number(c.dtStart),to=normalizedEnd(c);
     if(!Number.isFinite(from)||!Number.isFinite(to)||to<=from||from>=end||to<=start)return [];
-    return [{id:String(c.id||''),equipmentId:equipment.equipmentId,equipmentName:equipment.equipmentName,start:from*1000,end:to*1000,profileId:oneOwner(c.content),websiteOwner:ownerName(c.content)}];
+    return [{id:String(c.id||''),equipmentId:equipment.equipmentId,equipmentName:equipment.equipmentName,start:from*1000,end:to*1000,profileId:oneOwner(c.content),websiteOwner:ownerName(c.content),content:String(c.content||'')}];
   });
 }
 function classify(rows,store,freshAccounts) {
   const known=knownIdentities(store).filter(a=>!freshAccounts||freshAccounts.has(a.accountId)),byId=new Map(known.map(a=>[a.profileId,a]));
   const complete=store.data.accounts.length>0&&known.length===store.data.accounts.length;
   return {identified:known.length,total:store.data.accounts.length,complete,rows:rows.map(({profileId,...row})=>{
-    const account=profileId&&byId.get(profileId);
-    return {...row,owner:account?.owner||row.websiteOwner||'未显示',membership:account?'ours':profileId&&complete?'other':'unknown'};
+    const account=profileId&&byId.get(profileId),member=teamMatch(row.content,store.data.config.teamMembers||[]);
+    const {content,...display}=row;return {...display,profileId,owner:row.websiteOwner||account?.owner||member?.name||'未显示',membership:account||member?'ours':profileId&&complete?'other':'unknown'};
   }).sort((a,b)=>a.start-b.start||a.equipmentId-b.equipmentId)};
 }
 class SiteAppointments {
@@ -64,7 +60,7 @@ class SiteAppointments {
         session=await worker.session(account.id,true,false,job);
         for(const device of devices){
           if(generation!==this.generation)return;if(readDevices.has(device.equipmentId))continue;
-          try {await this.open(session.page,rulesFor(device));const components=await this.components(session.page,weekStart(date));rows.push(...siteRows(date,device,components));readDevices.add(device.equipmentId);deviceErrors.delete(device.equipmentId);}
+          try {await this.open(session.page,rulesFor(device));const components=await this.components(session.page,weekStart(date));rows.push(...siteRows(require('./schedule-logic.cjs').shanghaiDate(weekStart(date)*1000),device,components,7));readDevices.add(device.equipmentId);deviceErrors.delete(device.equipmentId);}
           catch(error){deviceErrors.set(device.equipmentId,device.equipmentName+'：'+safeError(error));}
         }
         try{const href=await session.page.locator('a.user').getAttribute('href',{timeout:10000}),profileId=href?.match(/index[.](\d+)/)?.[1];if(!profileId||!recordIdentity(this.store,account.id,profileId,account))throw new Error('账号身份未能确认');freshAccounts.add(account.id);}
@@ -74,9 +70,10 @@ class SiteAppointments {
     }
     if(generation!==this.generation)return;
     errors.push(...deviceErrors.values());const readCount=readDevices.size;
-    const result=classify(rows,this.store,freshAccounts);
+    this.rawRows=rows;this.freshAccounts=freshAccounts;const result=classify(rows,this.store,freshAccounts);
     this.state={status:readCount===devices.length&&result.complete?'complete':readCount?'partial':'failed',date,checkedAt:this.clock(),...result,errors,message:readCount?'网站预约已更新':'未能读取网站预约，请检查账号或网络'};
   }
+  reclassify(){if(!this.rawRows||!['complete','partial'].includes(this.state.status))return;Object.assign(this.state,classify(this.rawRows,this.store,this.freshAccounts));}
   async cancel(message='已暂停读取') {
     if(this.cancelPromise)return this.cancelPromise;if(!this.task)return;
     const task=this.task,worker=this.worker;this.generation++;

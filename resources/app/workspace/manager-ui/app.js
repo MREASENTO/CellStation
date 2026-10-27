@@ -96,7 +96,7 @@ function render() {
   const control=$('#control-button'); control.textContent=(state.pendingStart||controlPending)?'取消启动':state.config.enabled?'暂停调度':'启动调度'; control.disabled=false;
   const network=state.operations?.network;
   const notices=[];if(network==='offline')notices.push('网络已断开，可能影响预约。请检查连接。');if(state.config.enabled&&!selectedCount)notices.push('尚未勾选预约窗口；请前往“时段与随机分配”选择。');if(selectedCount>enabled.length)notices.push('所选窗口多于启用账号，未分配的窗口不会执行；请调整窗口或启用更多账号。');$('#runtime-warning').hidden=!notices.length;$('#runtime-warning').textContent=notices.join(' ');
-  window.cellStationRenderV100?.(state); renderSettings(); renderPersonal(); renderSite(); renderAccounts(); renderWindows(); renderAssignment(); if(view==='windows')loadAssignment().catch(e=>toast(e.message,true)); renderPlan(); renderHistory(); renderHealth(); renderExclusions(); renderActivity(); updateClock();
+  window.cellStationRenderV100?.(state); renderSettings(); renderPersonal(); renderSite(); renderAccounts(); renderTeam(); renderWindows(); renderAssignment(); if(view==='windows')loadAssignment().catch(e=>toast(e.message,true)); renderPlan(); renderHistory(); renderHealth(); renderExclusions(); renderActivity(); updateClock();
   $('#desktop-settings-hint').hidden=state.desktop;
   $('.local-badge').textContent=state.desktop?'桌面版':'本机服务';
 }
@@ -135,7 +135,12 @@ function renderPersonal(){
 $('#personal-account').addEventListener('change',()=>{const id=$('#personal-account').value||null;$('#open-personal-site').disabled=!id||!$('#personal-equipment').value;autosave('personal-account',()=>api('personal-account',{accountId:id},'PUT'),0);});
 $('#personal-equipment').addEventListener('change',()=>{$('#open-personal-site').disabled=!$('#personal-account').value||!$('#personal-equipment').value;});
 $('#open-personal-site').addEventListener('click',async()=>{const button=$('#open-personal-site');button.disabled=true;try{await window.cellStationFlush();const result=await api('website/open-personal',{equipmentId:Number($('#personal-equipment').value)});toast(result.message,false,result.ready?'':'review');}catch(e){toast(e.message,true);}finally{button.disabled=false;}});
-let siteRequest=0,siteError=null,siteStarting=false;
+let siteRequest=0,siteError=null,siteStarting=false,siteKey='',siteEquipmentKey='',siteDetail=null;
+const plusDays=(date,n)=>day(Date.parse(date+'T00:00:00+08:00')+n*86400000);
+const weekOf=date=>{const ms=Date.parse(date+'T00:00:00+08:00');return plusDays(date,-new Date(ms+28800000).getUTCDay());};
+function changeSiteWeek(n){const input=$('#site-date');input.value=plusDays(input.value,n*7);siteDateFollow.edit('site-date',input.value,Date.now()+offset);syncDates();startSiteRead();}
+$('#site-prev').addEventListener('click',()=>changeSiteWeek(-1));$('#site-next').addEventListener('click',()=>changeSiteWeek(1));
+$('#site-equipment').addEventListener('change',()=>{siteKey='';renderSite();});
 async function startSiteRead(){
   if(!state||!$('#site-date').value)return;const date=$('#site-date').value,request=++siteRequest;
   siteError=null;siteStarting=true;renderSite();
@@ -144,15 +149,27 @@ async function startSiteRead(){
   finally{if(request===siteRequest){siteStarting=false;renderSite();}}
 }
 function renderSite(){
-  const result=state.siteAppointments,date=$('#site-date').value;if(!result||result.date!==date||siteError?.date===date){$('#site-rows').replaceChildren();$('#site-errors').replaceChildren();$('#site-errors').hidden=true;$('#site-empty').hidden=true;$('#site-summary').textContent=siteError?.date===date?siteError.message:'正在读取所选日期的预约…';$('#refresh-site').disabled=siteStarting;return;}
+  const date=$('#site-date').value;if(!date)return;const start=weekOf(date),end=plusDays(start,6);$('#site-week-label').textContent=start.replaceAll('-','/')+' - '+end.replaceAll('-','/');
+  const select=$('#site-equipment'),devices=(state.config.equipments||[]).filter(d=>d.enabled!==false),deviceKey=JSON.stringify(devices);
+  if(deviceKey!==siteEquipmentKey){siteEquipmentKey=deviceKey;const selected=select.value;select.replaceChildren();for(const d of devices){const o=make('option','',d.equipmentName);o.value=String(d.equipmentId);select.append(o);}if(devices.some(d=>String(d.equipmentId)===selected))select.value=selected;}
+  const result=state.siteAppointments;
+  if(!result||result.date!==date||siteError?.date===date){$('#site-calendar').replaceChildren();siteKey='';$('#site-errors').replaceChildren();$('#site-errors').hidden=true;$('#site-empty').hidden=true;$('#site-summary').textContent=siteError?.date===date?siteError.message:'正在读取所选日期的预约…';$('#refresh-site').disabled=siteStarting;return;}
   const loading=result.status==='loading';$('#refresh-site').disabled=loading||siteStarting;
   $('#site-summary').textContent=loading?'正在读取网站预约…':`${result.message||''}${result.checkedAt?' · 更新于 '+fmt(result.checkedAt,true):''}${result.total?` · 已核实 ${result.identified}/${result.total} 个账号`:''}`;
-  const root=$('#site-rows');root.replaceChildren();
-  const time=value=>day(value)==result.date?fmt(value).slice(0,5):fmt(value,true).slice(0,16);
-  for(const x of result.rows||[]){const row=make('tr');row.append(make('td','',x.equipmentName),make('td','',time(x.start)+'–'+time(x.end)),make('td','',x.owner),make('td','membership-'+x.membership,({ours:'是',other:'否',unknown:'待确认'})[x.membership]||'待确认'));root.append(row);}
-  $('#site-empty').hidden=loading||(result.rows||[]).length>0;$('#site-empty').textContent=result.status==='complete'?'该日期暂无预约':'暂无可显示的预约';
+  const key=JSON.stringify([start,select.value,result.status,result.rows]);
+  if(key!==siteKey){siteKey=key;const root=$('#site-calendar');root.replaceChildren();const corner=make('div','site-corner','时间');root.append(corner);const week=['周日','周一','周二','周三','周四','周五','周六'];
+    for(let i=0;i<7;i++){const d=plusDays(start,i),head=make('div','site-day-head'+(d===date?' selected':''));head.append(make('strong','',week[i]),make('span','',d.slice(5).replace('-','/')));root.append(head);}
+    const axis=make('div','site-time-axis');for(let h=0;h<24;h++){const label=make('span','',String(h).padStart(2,'0')+':00');label.style.top=(h*56)+'px';axis.append(label);}root.append(axis);
+    const selected=Number(select.value),rows=(result.rows||[]).filter(x=>Number(x.equipmentId)===selected);
+    for(let i=0;i<7;i++){const d=plusDays(start,i),from=Date.parse(d+'T00:00:00+08:00'),to=from+86400000,column=make('div','site-day-column'),events=rows.filter(x=>x.start<to&&x.end>from).sort((a,b)=>a.start-b.start||a.end-b.end),laneEnds=[],position=[];
+      for(const x of events){const a=Math.max(x.start,from),b=Math.min(x.end,to);let lane=laneEnds.findIndex(t=>t<=a);if(lane<0)lane=laneEnds.length;laneEnds[lane]=b;position.push({x,a,b,lane});}
+      const lanes=Math.max(1,laneEnds.length);for(const {x,a,b,lane} of position){const card=make('button','site-event site-event-'+x.membership);card.type='button';card.style.top=((a-from)/1800000*28)+'px';card.style.height=Math.max(20,(b-a)/1800000*28)+'px';card.style.left=(lane*100/lanes)+'%';card.style.width=(100/lanes)+'%';const text=fmt(x.start).slice(0,5)+'–'+fmt(x.end).slice(0,5);card.title=`${text} ${x.owner} · ${{ours:'本团队',other:'非本团队',unknown:'待确认'}[x.membership]||'待确认'}`;card.setAttribute('aria-label',card.title);card.append(make('span','site-event-time',text),make('strong','site-event-owner',x.owner));card.addEventListener('click',()=>showSiteDetail(x));column.append(card);}root.append(column);}
+    $('#site-empty').hidden=loading||rows.length>0;$('#site-empty').textContent=result.status==='complete'?'该周该设备暂无预约':'暂无可显示的预约';}
   const errors=$('#site-errors');errors.hidden=!result.errors?.length;errors.replaceChildren();for(const message of result.errors||[])errors.append(make('p','',message));
 }
+function showSiteDetail(x){siteDetail=x;$('#site-detail-text').textContent=`${x.equipmentName} · ${fmt(x.start,true).slice(0,16)}–${fmt(x.end,true).slice(0,16)} · ${x.owner} · ${{ours:'本团队',other:'非本团队',unknown:'待确认'}[x.membership]||'待确认'}`;$('#site-detail-add').hidden=x.membership==='ours'||!x.profileId||!x.owner||x.owner==='未显示';$('#site-detail').showModal();}
+$('#site-detail-close').addEventListener('click',()=>$('#site-detail').close());
+$('#site-detail-add').addEventListener('click',()=>{if(!siteDetail)return;const x=siteDetail;$('#site-detail').close();const existing=(state.config.teamMembers||[]).find(m=>m.name===x.owner&&!m.profileId);editTeam(existing||{name:x.owner,profileId:x.profileId});if(existing)$('#team-form').elements.profileId.value=x.profileId;});
 $('#refresh-site').addEventListener('click',startSiteRead);
 let accountsSignature;
 function renderAccounts() {
@@ -168,6 +185,11 @@ function renderAccounts() {
     row.append(owner,make('td','',a.username),cell,actions);root.append(row);
   }
 }
+let teamSignature;
+function renderTeam(){const members=state.config.teamMembers||[],key=JSON.stringify(members);if(key===teamSignature)return;teamSignature=key;const root=$('#team-table');root.replaceChildren();$('#team-empty').hidden=members.length>0;for(const m of members){const row=make('tr'),actions=make('td');actions.append(button('编辑',()=>editTeam(m)),button('移除',async()=>{if(!confirm(`确定移除团队人员“${m.name}”？`))return;await api('team',{id:m.id},'DELETE');await refresh();toast('已移除团队人员');}));row.append(make('td','',m.name),make('td','',m.profileId||'按姓名匹配'),actions);root.append(row);}}
+function editTeam(member){const f=$('#team-form');f.reset();f.elements.id.value=member?.id||'';f.elements.name.value=member?.name||'';f.elements.profileId.value=member?.profileId||'';$('#team-title').textContent=member?.id?'编辑团队人员':'添加团队人员';$('#team-dialog').showModal();}
+$('#add-team').addEventListener('click',()=>editTeam());for(const id of ['close-team','cancel-team'])$('#'+id).addEventListener('click',()=>$('#team-dialog').close());
+$('#team-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget;try{await api('team',{...(f.elements.id.value?{id:f.elements.id.value}:{}),name:f.elements.name.value,profileId:f.elements.profileId.value});$('#team-dialog').close();await refresh();toast('团队人员已保存');}catch(error){toast(error.message,true);}});
 function planJobs() { return preview?.date===$('#plan-date').value?preview.jobs:state.plan.filter(j=>j.date===$('#plan-date').value); }
 const planOpen = new Map();
 let planSignature;
@@ -379,7 +401,7 @@ $('#restore-file').addEventListener('change',async e=>{
       make('p','',`新增 ${r.newAccounts} 个账号 · 更新 ${r.updatedAccounts} 个同名账号 · 保留 ${r.retainedAccounts} 个本机其他账号 · ${r.needsPassword} 个需重录密码`));
     const wrap=make('div','table-wrap'),table=make('table'),head=make('thead'),tr=make('tr');for(const text of ['账号 / 使用人','处理方式','密码处理','导入后状态'])tr.append(make('th','',text));head.append(tr);table.append(head);
     const body=make('tbody');for(const a of r.accountChanges){const row=make('tr');row.append(make('td','',a.username+(a.owner?' / '+a.owner:'')),make('td','',a.action),make('td','',a.password),make('td','',a.enabled?'启用':'停用'));body.append(row);}table.append(body);wrap.append(table);root.append(wrap);
-    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；再次复核间隔 ${r.reviewPolicy.retryIntervalMinutes} 分钟；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',`本人账号：${state.accounts.find(a=>a.id===r.personalAccountId)?.username||'未选择'}；自动处理已开放计划：${r.catchUpEnabled?'开启':'关闭'}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
+    root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；再次复核间隔 ${r.reviewPolicy.retryIntervalMinutes} 分钟；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',`团队人员：${r.teamMembers} 人；本人账号：${state.accounts.find(a=>a.id===r.personalAccountId)?.username||'未选择'}；自动处理已开放计划：${r.catchUpEnabled?'开启':'关闭'}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
     if(r.dateDetails?.length){const details=make('details','backup-date-plans'),summary=make('summary','',`查看单日调整：${r.customDates}天自定义时间段、${r.assignmentDays}天已保存分配`);details.append(summary);for(const d of r.dateDetails){details.append(make('p','',d.date+' · '+d.windows.join('、')+' · '+d.accounts.map(a=>(state.windows.find(w=>w.id===a.windowId)?.start||a.windowId)+' '+a.username).join('；')));}root.append(details);}
     if(r.selectionWarning)root.append(make('p','bad',r.selectionWarning));$('#confirm-restore').hidden=false;$('#cancel-restore').hidden=false;
   }catch(error){clearRestore();$('#restore-result').hidden=false;$('#restore-result').textContent='无法预览：'+error.message;toast(error.message,true);}finally{e.target.value='';}
