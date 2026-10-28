@@ -16,9 +16,11 @@ function validateRetryPolicy(policy) {
   return { taskRetries: policy.taskRetries, captchaRetries: policy.captchaRetries };
 }
 function validateReviewPolicy(policy) {
-  const value=policy?.retryIntervalMinutes;
-  if(!policy||typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(k=>k!=='retryIntervalMinutes')||!Number.isSafeInteger(value)||value<1||!Number.isSafeInteger(value*60000)||!Number.isFinite(new Date(Date.now()+value*60000).getTime()))throw new Error('再次复核间隔需为正整数分钟');
-  return {retryIntervalMinutes:value};
+  if(!policy||typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(k=>!['retryIntervalMinutes','retryIntervalSeconds'].includes(k)))throw new Error('复核等待时间需为正整数秒');
+  let seconds=policy.retryIntervalSeconds;
+  if(seconds===undefined){const minutes=policy.retryIntervalMinutes;if(!Number.isSafeInteger(minutes)||minutes<1)throw new Error('复核等待时间需为正整数秒');seconds=minutes*60;}
+  if(!Number.isSafeInteger(seconds)||seconds<1||!Number.isSafeInteger(seconds*1000)||!Number.isFinite(new Date(Date.now()+seconds*1000).getTime())||policy.retryIntervalSeconds!==undefined&&policy.retryIntervalMinutes!==undefined&&(!Number.isFinite(policy.retryIntervalMinutes)||Math.abs(policy.retryIntervalMinutes*60-seconds)>0.000001))throw new Error('复核等待时间需为正整数秒');
+  return {retryIntervalMinutes:seconds/60,retryIntervalSeconds:seconds};
 }
 function validDate(date) { return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date + 'T00:00:00+08:00')) && shanghaiDate(Date.parse(date + 'T00:00:00+08:00')) === date; }
 function validateExclusions(entries) {
@@ -90,7 +92,7 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
   return jobs.sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
 }
 function defaults() {
-  return { enabled: false, enabledAt: null, catchUpEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
+  return { enabled: false, enabledAt: null, catchUpEnabled:true, reviewRebookEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
     equipment: require('./equipment.cjs').defaultEquipment(), theme: 'system', windows: WINDOWS.map(w => ({ id: w.id, enabled: true })) };
 }
 function shuffleAssignments(config, accounts, locked = {}, randomInt = require('node:crypto').randomInt) {

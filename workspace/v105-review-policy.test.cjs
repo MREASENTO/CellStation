@@ -4,7 +4,7 @@ const {ManagerStore}=require('./manager-store.cjs'),{Reviews}=require('./reviews
 const base=path.resolve(__dirname,'../work/tests');fs.mkdirSync(base,{recursive:true});
 const vault={protect:async s=>'encrypted:'+s,unprotect:async s=>s.slice(10)};
 async function fixture({matchAt=Infinity,error=false}={}) {
- const root=fs.mkdtempSync(path.join(base,'v105-review-')),store=new ManagerStore(root,vault);await store.saveAccount({username:'mock-original',password:'test-only'});
+ const root=fs.mkdtempSync(path.join(base,'v105-review-')),store=new ManagerStore(root,vault);store.data.config.reviewRebookEnabled=false;await store.saveAccount({username:'mock-original',password:'test-only'});
  let now=Date.parse('2026-10-24T08:00:00+08:00'),queries=0,available=true;const sent=[];
  const notifications=new WechatNotifications(root,vault,async(url,options)=>{const p=new URLSearchParams(options.body);sent.push({title:p.get('title'),content:p.get('desp')});return new Response('{"code":0}');});await notifications.update({key:'SCT_mock-key-for-tests',enabled:true});
  const reviews=new Reviews(store,root,{clock:()=>now,canRun:()=>available,components:async()=>queries>=matchAt?[{id:77,dtStart:Date.parse('2026-10-31T08:30:00+08:00')/1000,dtEnd:Date.parse('2026-10-31T09:00:00+08:00')/1000,content:'<a href="/profile/index.1">own</a> cell'}]:[]});
@@ -14,7 +14,7 @@ async function fixture({matchAt=Infinity,error=false}={}) {
  return{root,store,reviews,notifications,sent,job,clock:()=>now,time:value=>now=value,queries:()=>queries,available:value=>available=value,close:async()=>{await reviews.close();await notifications.idle();}};
 }
 test('review interval defaults to five minutes, migrates, persists and rejects invalid values',()=>{
- const root=fs.mkdtempSync(path.join(base,'v105-policy-')),store=new ManagerStore(root,vault);assert.deepEqual(store.data.config.reviewPolicy,{retryIntervalMinutes:5});store.setReviewPolicy({retryIntervalMinutes:13});assert.equal(new ManagerStore(root,vault).data.config.reviewPolicy.retryIntervalMinutes,13);
+ const root=fs.mkdtempSync(path.join(base,'v105-policy-')),store=new ManagerStore(root,vault);assert.deepEqual(store.data.config.reviewPolicy,{retryIntervalMinutes:5,retryIntervalSeconds:300});store.setReviewPolicy({retryIntervalMinutes:13});assert.equal(new ManagerStore(root,vault).data.config.reviewPolicy.retryIntervalMinutes,13);
  for(const value of [0,-1,1.5,NaN,Infinity,'3',true,null,Number.MAX_SAFE_INTEGER])assert.throws(()=>store.setReviewPolicy({retryIntervalMinutes:value}),/正整数/);assert.equal(store.data.config.reviewPolicy.retryIntervalMinutes,13);
  delete store.data.config.reviewPolicy;store.persist();assert.equal(new ManagerStore(root,vault).data.config.reviewPolicy.retryIntervalMinutes,5);
 });

@@ -17,6 +17,7 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       CELLSTATION_DISABLE_UPDATES: '1'
+      CELLSTATION_DISABLE_SITE_SYNC: '1'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -38,7 +39,7 @@ jobs:
         working-directory: workspace
         run: |
           $tests = @(Get-ChildItem -Filter '*.test.cjs' -File | Select-Object -ExpandProperty Name)
-          node --test @tests
+          node --test --test-concurrency=4 @tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -B v100-update-helper.test.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -56,15 +57,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python workspace/package-desktop.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item workspace/使用说明.txt "work/release-artifacts/CellStation-v$env:NEW_VERSION-README.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish application update Git branch and sign manifest
         env:
           GH_TOKEN: ${{ github.token }}
           CELLSTATION_UPDATE_SIGNING_KEY: ${{ secrets.CELLSTATION_UPDATE_SIGNING_KEY }}
           NEW_VERSION: ${{ inputs.version }}
         run: |
-          python -B scripts/publish-app.py "outputs/release-v$env:NEW_VERSION/CellStation-win32-x64"
+          python -B scripts/publish-app.py "work/build-v$env:NEW_VERSION/CellStation-win32-x64"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node workspace/sign-release.cjs "outputs/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json --env-key "work/app-update-v$env:NEW_VERSION.json"
+          node workspace/sign-release.cjs "work/release-artifacts/CellStation-v$env:NEW_VERSION-win64.zip" work/latest.json --env-key "work/app-update-v$env:NEW_VERSION.json"
       - name: Commit release source and publish assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,7 +78,7 @@ jobs:
           git add workspace README.md
           git commit -m "Release v$env:NEW_VERSION"
           git push origin HEAD:main
-          gh release create "v$env:NEW_VERSION" "outputs/CellStation-v$env:NEW_VERSION-win64.zip" "outputs/CellStation-v$env:NEW_VERSION-win64.sha256.txt" --target main --title "CellStation $env:NEW_VERSION" --notes "Stable Windows portable release; account data excluded."
+          gh release create "v$env:NEW_VERSION" "work/release-artifacts/CellStation-v$env:NEW_VERSION-win64.zip" "work/release-artifacts/CellStation-v$env:NEW_VERSION-win64.sha256.txt" "work/release-artifacts/CellStation-v$env:NEW_VERSION-README.txt" --target main --title "CellStation $env:NEW_VERSION" --notes "Stable Windows portable release; account data excluded."
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           gh api "repos/MREASENTO/CellStation/releases/tags/v$env:NEW_VERSION" > work/published-release.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

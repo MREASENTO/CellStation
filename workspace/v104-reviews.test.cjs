@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {ManagerStore}=require('./manager-store.cjs'),{Reviews,reviewPlan,INTERVAL}=require('./reviews.cjs'),{createManager}=require('./manager-server.cjs');
 const base=path.resolve(__dirname,'../work/tests');fs.mkdirSync(base,{recursive:true});
 async function fixture() {
- const root=fs.mkdtempSync(path.join(base,'v104-review-')),vault={protect:async s=>'encrypted:'+s,unprotect:async s=>s.slice(10)},store=new ManagerStore(root,vault);
+ const root=fs.mkdtempSync(path.join(base,'v104-review-')),vault={protect:async s=>'encrypted:'+s,unprotect:async s=>s.slice(10)},store=new ManagerStore(root,vault);store.data.config.reviewRebookEnabled=false;
  const a=await store.saveAccount({username:'original',owner:'原账号',password:'test-only',enabled:true}),b=await store.saveAccount({username:'different',owner:'新分配账号',password:'other',enabled:true});
  const job={id:'record',date:'2025-10-28',start:'08:30',end:'09:00',accountId:a.id,accountUsername:'original',accountOwner:'原账号',status:'needs_review',equipment:{equipmentId:51,equipmentName:'原设备'},releaseAt:Date.parse('2025-10-21T09:00:00+08:00'),savingAt:100,message:'原始保存不明确',timeline:[{step:'save_request',at:101,elapsedMs:1}]};store.job(job,job);
  let now=Date.parse('2026-10-23T08:00:00+08:00'),rows=[],failure=false;const launches=[],users=[],browsers=[];

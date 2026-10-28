@@ -47,7 +47,7 @@ test('failure, missed and uncertain jobs notify once across restarts, batch and 
   f.messages[0].click(); assert.deepEqual(f.views, ['history']);
   const restored = new DesktopIntegration(f.options); restored.notify(job); restored.flush(); assert.equal(f.messages.length, 1);
   restored.notify({ ...job, id: 'two', status: 'needs_review' }); restored.notify({ ...job, id: 'three', status: 'missed' }); restored.flush();
-  assert.match(f.messages[1].title, /2项/); assert.ok(f.messages[1].content.includes('不会重复提交'));
+  assert.match(f.messages[1].title, /2项/); assert.ok(f.messages[1].content.includes('复核流程'));
   restored.notify({ ...job, id: 'success', status: 'success' }); restored.flush(); assert.equal(f.messages.length, 2);
   f.controller.dispose(); restored.dispose();
 });

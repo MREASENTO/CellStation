@@ -4,7 +4,7 @@ const path = require('node:path');
 const { reviewNotice } = require('./wechat-notifications.cjs');
 const FAILURE = new Set(['failed', 'needs_review', 'missed']);
 function reason(job) {
-  if (job.status === 'needs_review') return reviewNotice(job)?.summary||'保存结果不明确，程序将立即复核，并按设置间隔再查一次；不会重复提交。';
+  if (job.status === 'needs_review') return reviewNotice(job)?.summary||'保存结果不明确，程序将按当前复核流程处理，请查看执行记录。';
   if (job.status === 'missed') return '已超过执行时间，未补约。';
   const message = String(job.message || '');
   if (/验证码|OCR|登录|密码|账号/.test(message)) return '账号登录或验证码检查未通过。';

@@ -4,19 +4,19 @@ const GOOD = new Set(['success','already_exists']), BAD = new Set(['failed','nee
 const reviewTime = value => Number.isFinite(value)?new Date(value+8*3600000).toISOString().slice(0,23).replace('T',' '):'未记录';
 function reviewNotice(job) {
   const review=job.review;
-  if(job.status!=='needs_review'||review?.protocol!==2)return {key:job.id+'|'+job.status,kind:'ordinary'};
+  if(job.status!=='needs_review'||!(review?.protocol>=2))return {key:job.id+'|'+job.status,kind:'ordinary'};
   const key=`${job.id}|needs_review|${review.cycleId||'review-v2'}|${review.notice}`;
   if(review.state==='waiting'&&review.stage==='delayed'&&review.notice==='retry_scheduled')return {
-    key,kind:'retry_scheduled',title:'CellStation · 首次复核未确认，已安排重查',
-    banner:'【首次复核未确认 · 程序还会再次复核】',
-    summary:'首次复核未确认，程序将按设置间隔再次查询，尚未要求你自主复核。',
-    instructions:[`再次复核时间：${reviewTime(review.nextAt)}（北京时间）`,`当前复核间隔：${review.intervalMinutes}分钟`,'调度运行时程序将再次查询；如果再次复核仍未确认，会另发【请自主复核】提醒。不会重复提交预约。']
+    key,kind:'retry_scheduled',title:review.protocol===3?'CellStation · 补约后复核未确认，已安排最终复核':'CellStation · 首次复核未确认，已安排重查',
+    banner:review.protocol===3?'【补约后即时复核未确认 · 已安排最终复核】':'【首次复核未确认 · 程序还会再次复核】',
+    summary:review.protocol===3?'本轮补约及即时复核已处理，等待设定秒数后最终复核。':'首次复核未确认，程序将按设置间隔再次查询，尚未要求你自主复核。',
+    instructions:[`再次复核时间：${reviewTime(review.nextAt)}（北京时间）`,`当前复核等待：${review.intervalSeconds??review.intervalMinutes*60}秒`,review.protocol===3?'调度运行时将进行最终复核；仍未确认会另发【请自主复核】提醒，后续不会再次自动补约。':'调度运行时程序将再次查询；如果再次复核仍未确认，会另发【请自主复核】提醒。不会重复提交预约。']
   };
   if(review.state==='failed'&&review.manualRequired&&review.notice==='manual_required')return {
-    key,kind:'manual_required',title:'【请自主复核】CellStation · 两轮复核仍未确认',
+    key,kind:'manual_required',title:review.protocol===3?'【请自主复核】CellStation · 最终复核仍未确认':'【请自主复核】CellStation · 两轮复核仍未确认',
     banner:'【需要你亲自处理：请自主复核】',
-    summary:'两轮复核仍未确认，已停止自动复核。请你打开原账号网页自主复核；请勿直接重复预约。',
-    instructions:['请你现在打开本机CellStation → 执行记录 →“打开网页核对”，亲自登录原账号自主复核。','程序已停止自动复核；确认网站记录前，请勿直接重复预约。',`首次复核时间：${reviewTime(review.firstCheckedAt)}`,`再次复核时间：${reviewTime(review.delayedCheckedAt)}`]
+    summary:review.protocol===3?'补约处理及最终复核仍未确认，已停止自动处理。请打开原账号网页自主复核。':'两轮复核仍未确认，已停止自动复核。请你打开原账号网页自主复核；请勿直接重复预约。',
+    instructions:['请你现在打开本机CellStation → 执行记录 →“打开网页核对”，亲自登录原账号自主复核。','程序已停止自动复核；确认网站记录前，请勿直接重复预约。',`首次复核时间：${reviewTime(review.firstCheckedAt)}`,...(review.protocol===3?[`补约处理时间：${reviewTime(review.rebooking?.finishedAt)}`,`补约后即时复核：${reviewTime(review.postRebookCheckedAt)}`]:[]),`再次复核时间：${reviewTime(review.delayedCheckedAt)}`]
   };
   return null;
 }
