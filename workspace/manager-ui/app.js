@@ -156,7 +156,7 @@ function renderSite(){
   if(deviceKey!==siteEquipmentKey){siteEquipmentKey=deviceKey;const selected=select.value;select.replaceChildren();for(const d of devices){const o=make('option','',d.equipmentName);o.value=String(d.equipmentId);select.append(o);}if(devices.some(d=>String(d.equipmentId)===selected))select.value=selected;}
   const result=state.siteAppointments||{status:'idle',rows:[]},loading=result.status==='loading',range=result.deviceRanges?.[select.value],checked=range?.checkedAt||result.checkedAt;
   $('#refresh-site').disabled=loading||siteStarting;
-  $('#site-summary').textContent=(siteError||result.message||'每日更新一次，读取当天起未来7天预约。')+(checked?' · 缓存更新于 '+fmt(checked,true).slice(0,19):'')+(range?' · 读取范围 '+range.start+' 至 '+range.end:result.rangeStart?' · 读取范围 '+result.rangeStart+' 至 '+result.rangeEnd:'');
+  $('#site-summary').textContent=(siteError||result.message||'缓存今天起8天预约；预约确认后即时增量同步。')+(checked?' · 缓存更新于 '+fmt(checked,true).slice(0,19):'')+(range?' · 读取范围 '+range.start+' 至 '+range.end:result.rangeStart?' · 读取范围 '+result.rangeStart+' 至 '+result.rangeEnd:'');
   const selected=Number(select.value),rows=(result.rows||[]).filter(x=>Number(x.equipmentId)===selected&&x.start<Date.parse(plusDays(end,1)+'T00:00:00+08:00')&&x.end>Date.parse(start+'T00:00:00+08:00'));
   const key=JSON.stringify([start,select.value,result.status,result.rows,range,today,siteAllDay,new Date(now+28800000).getUTCHours()]);
   if(key!==siteKey){siteKey=key;const root=$('#site-calendar');root.replaceChildren();const mins=[];
@@ -165,7 +165,7 @@ function renderSite(){
     if(today>=start&&today<=end){const h=new Date(now+28800000).getUTCHours();begin=Math.min(begin,Math.max(0,h-1));finish=Math.max(finish,Math.min(24,h+2));}
     if(siteAllDay){begin=0;finish=24;}siteHourStart=begin;root.style.gridTemplateRows=`44px ${(finish-begin)*56}px`;
     const corner=make('div','site-corner','时间');root.append(corner);const week=['周日','周一','周二','周三','周四','周五','周六'];
-    const covered=d=>range?range.days?.includes(d)||d>=range.start&&d<=range.end:result.rangeStart?d>=result.rangeStart&&d<=result.rangeEnd:true;
+    const covered=d=>range?(Array.isArray(range.days)?range.days.includes(d):d>=range.start&&d<=range.end):result.rangeStart?d>=result.rangeStart&&d<=result.rangeEnd:true;
     for(let i=0;i<7;i++){const d=plusDays(start,i),head=make('div','site-day-head');head.dataset.date=d;head.append(make('strong','',week[i]),make('span','',d.slice(5).replace('-','/')));if(!covered(d)){head.classList.add('uncached');head.title='该日期尚无完整缓存；仅显示已有记录';}root.append(head);}
     const axis=make('div','site-time-axis');for(let h=begin;h<finish;h++){const label=make('span','',String(h).padStart(2,'0')+':00');label.style.top=((h-begin)*56)+'px';axis.append(label);}root.append(axis);
     for(let i=0;i<7;i++){const d=plusDays(start,i),midnight=Date.parse(d+'T00:00:00+08:00'),from=midnight+begin*3600000,to=midnight+finish*3600000,column=make('div','site-day-column'),events=rows.filter(x=>x.start<to&&x.end>from).sort((a,b)=>a.start-b.start||a.end-b.end),laneEnds=[],position=[];column.dataset.date=d;

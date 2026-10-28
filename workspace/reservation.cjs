@@ -16,6 +16,8 @@ async function openEquipment(page, rules) {
   await page.locator('table.calendar_week').waitFor({ state: 'visible' });
 }
 
+function notifyCalendar(options,snapshot){try{options.onCalendar?.(snapshot);}catch{/* Optional display cache cannot change a verified reservation. */}}
+
 async function checkAvailability(page, plan, options = {}) {
   if (!new URL(page.url()).pathname.includes(`index.${plan.equipmentId}.reserv`)) throw new Error('当前仪器页面不匹配');
   const weekStart = await ensureWeek(page, plan.start);
@@ -23,10 +25,10 @@ async function checkAvailability(page, plan, options = {}) {
   const userId = profile.match(/index\.(\d+)/)?.[1];
   if (!userId) throw new Error('无法确认当前登录账号');
   await options.onIdentity?.(userId);
-  const components=await calendarComponents(page, weekStart),assessment = assessComponents(components, plan, userId);
+  const readAt=Date.now(),components=await calendarComponents(page, weekStart),calendarSnapshot={components,weekStart,readAt,checkedAt:Date.now()},assessment = assessComponents(components, plan, userId);
   const {coveringOurs,oneOwner,teamMatch}=require('./site-identity.cjs');
   const duplicate=coveringOurs(components,plan,[userId,...(options.profileIds?.()||[])],options.teamMembers?.()||[]);
-  if (duplicate) return { ...assessment, duplicate, userId, weekStart };
+  if (duplicate) return { ...assessment, duplicate, userId, weekStart, calendarSnapshot };
   if (assessment.conflicts.length) {
     const known=new Set([userId,...(options.profileIds?.()||[])]),conflicts=assessment.conflicts;
     const uncertain=conflicts.some(c=>!oneOwner(c.content)||known.has(oneOwner(c.content))||teamMatch(c.content,options.teamMembers?.()||[]))||!options.identitiesComplete?.();
@@ -34,7 +36,7 @@ async function checkAvailability(page, plan, options = {}) {
     if(uncertain)error.code='OWNERSHIP_UNCERTAIN';error.retryable=false;throw error;
   }
   console.log(`该账号当天现有约 ${assessment.usedMinutes} 分钟；每日120分钟为计划参考。本次仅新增30分钟。`);
-  return { ...assessment, userId, weekStart };
+  return { ...assessment, userId, weekStart, calendarSnapshot };
 }
 
 async function verifyForm(page, plan) {
@@ -62,6 +64,7 @@ async function preflightBooking(page, request, options = {}) {
   const assessment = await checkAvailability(page, plan, options);
   options.onStep?.('availability_checked', '目标周、账号及冲突已核对');
   if (assessment.duplicate) {
+    notifyCalendar(options,assessment.calendarSnapshot);
     console.log('BOOKING_ALREADY_EXISTS', assessment.duplicate.id);
     return { plan, alreadyExists: true, reservationId: assessment.duplicate.id, userId:assessment.userId };
   }
@@ -90,7 +93,7 @@ async function commitBooking(page, request, options = {}) {
   const assessment = await checkAvailability(page, plan, options);
   options.onStep?.('final_availability_checked', '提交前重新读取日历，核实冲突与重复预约');
   if (options.expectedUserId && String(options.expectedUserId) !== String(assessment.userId)) throw new Error('登录账号与提前准备时不一致，未保存');
-  if (assessment.duplicate) return { status: 'already_exists', reservationId: assessment.duplicate.id, plan };
+  if (assessment.duplicate) {notifyCalendar(options,assessment.calendarSnapshot);return { status: 'already_exists', reservationId: assessment.duplicate.id, plan };}
   const form = await verifyForm(page, plan);
   let requestSeen = false, resolveResponse, websiteAlert = '';
   const responseReady = new Promise(resolve => { resolveResponse = resolve; });
@@ -113,11 +116,12 @@ async function commitBooking(page, request, options = {}) {
     options.onStep?.('save_click_returned', '保存按钮点击返回，开始读回核对');
     // Avoid querying before the save response, without blocking verification on a hung response.
     await Promise.race([responseReady, page.waitForTimeout(1000)]);
-    let match;
+    let match,calendarSnapshot;
     // Same eight verification passes and total 5250ms backoff as before, with earlier checks first.
     const waits = [100, 200, 350, 600, 1000, 1400, 1600];
     for (let i = 0; i < 8; i++) {
-      const components = await calendarComponents(page, assessment.weekStart);
+      const readAt=Date.now(),components = await calendarComponents(page, assessment.weekStart);
+      calendarSnapshot={components,weekStart:assessment.weekStart,readAt,checkedAt:Date.now()};
       match = assessComponents(components, plan, assessment.userId).duplicate;
       if (match) break;
       if (i < waits.length) await page.waitForTimeout(waits[i]);
@@ -129,6 +133,7 @@ async function commitBooking(page, request, options = {}) {
     if (!match.content.includes(plan.remark)) throw new Error('预约已存在但备注未确认，禁止重复保存，请人工核查');
     const confirmedAt = Date.now();
     options.onStep?.('record_verified', '已读回同账号、同时间、同备注的预约记录');
+    notifyCalendar(options,calendarSnapshot);
     const result = { confirmedAt, status: 'created', reservationId: match.id, accountId: assessment.userId, equipment: rules.equipmentName, date: plan.date, start: plan.startText, end: plan.endText, remark: plan.remark, verifiedAt: new Date(confirmedAt).toISOString() };
     // An optional receipt failure must not turn a verified reservation into an uncertain result.
     try {

@@ -59,7 +59,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.9' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.10' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -254,6 +254,7 @@ async function createManager(options = {}) {
     for(const job of startupNotifications.values())store.onJob(store.data.jobs[job.id]||job);startupNotifications.clear();
     for(const job of Object.values(store.data.jobs))if(job.status==='needs_review'&&job.review?.manualRequired&&clock()-(job.review.checkedAt||0)<86400000)wechat.enqueue(job);
     siteAppointments=options.siteAppointmentsFactory?options.siteAppointmentsFactory(store):new (require('./site-appointments.cjs').SiteAppointments)(store,options.operationsRoot||ROOT,{clock,canStart:()=>!operations.checkPromise&&!loginTests.size&&!reviews.active&&!scheduler.busy.size&&!scheduler.prepared.size&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
+    worker.onCalendar=reviews.onCalendar=(job,snapshot)=>siteAppointments.acceptCalendar?.(job,snapshot);
     scheduler.beforeJobs=(now,jobs,records)=>{siteAppointments.interruptIfCritical?.(now,jobs,records);if(Object.values(records).some(j=>j.status==='needs_review'&&j.review?.state==='waiting'&&j.review.nextAt<=now))siteAppointments.cancel('正在核对预约，请稍后刷新网站预约').catch(()=>{});};
     scheduler.externalBusy=accountId=>Boolean(siteAppointments.active||reviews.isAccountBusy?.(accountId));
     if (options.runScheduler !== false) reviews.start();

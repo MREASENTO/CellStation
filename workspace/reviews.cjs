@@ -111,7 +111,8 @@ class Reviews {
     if(this.closed)throw new Error('程序正在退出');entry ||= await this.session(target,false);
     const page=entry.page,href=await page.locator('a.user').getAttribute('href'),userId=href?.match(/index[.](\d+)/)?.[1];if(!userId)throw new Error('无法确认登录身份，未更新预约结果');
     const identity=require('./site-identity.cjs');identity.recordIdentity(this.store,target.account.id,userId,target.account);entry.userId=userId;
-    const plan=reviewPlan(target.job),rows=await this.components(page,plan.weekStart),match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)],this.store.data.config.teamMembers||[]);
+    const plan=reviewPlan(target.job),readAt=this.clock(),rows=await this.components(page,plan.weekStart),match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)],this.store.data.config.teamMembers||[]);
+    if(match){try{this.onCalendar?.(target.job,{components:rows,weekStart:plan.weekStart,readAt,checkedAt:this.clock()});}catch{}}
     return{entry,match};
   }
   rebookGate(target) {
@@ -132,7 +133,7 @@ class Reviews {
     try {
       this.rebookGate(target);
       if(!entry){const old=this.sessions.get(job.id);this.sessions.delete(job.id);await old?.browser.close().catch(()=>{});entry=await this.session(target,false);}
-      const identity=require('./site-identity.cjs'),options={rules:target.rules,onStep,onIdentity:userId=>identity.recordIdentity(this.store,target.account.id,userId,target.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length},request={date:job.date,start:job.start,end:job.end};
+      const identity=require('./site-identity.cjs'),options={onCalendar:snapshot=>this.onCalendar?.(target.job,snapshot),rules:target.rules,onStep,onIdentity:userId=>identity.recordIdentity(this.store,target.account.id,userId,target.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length},request={date:job.date,start:job.start,end:job.end};
       const first=await this.bookingApi.preflightBooking(entry.page,request,options);
       if(first.alreadyExists){this.setRebooking(job,{state:'already_exists',outcome:'already_exists',finishedAt:this.clock(),reservationId:first.reservationId,message:'网站已有团队预约，未重复提交'});return entry;}
       await this.pause(250);this.rebookGate(target);
