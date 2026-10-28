@@ -107,7 +107,7 @@ class BrowserWorker {
   }
   identityOptions(job) {
     const identity=require('./site-identity.cjs');
-    return {onIdentity:userId=>identity.recordIdentity(this.store,job.accountId,userId,job.runtime?.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length};
+    return {onCalendar:snapshot=>this.onCalendar?.(job,snapshot),onIdentity:userId=>identity.recordIdentity(this.store,job.accountId,userId,job.runtime?.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length};
   }
   async searchEquipment(name) {
     const account = this.store.accounts().find(a => a.enabled && a.hasPassword);

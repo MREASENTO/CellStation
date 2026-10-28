@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {Readable}=require('node:stream'),{pipeline}=require('node:stream/promises');
-const CURRENT_VERSION='1.0.9';
+const CURRENT_VERSION='1.0.10';
 const {eligibleGitUpdate,fetchGitUpdate}=require('./git-updates.cjs');
 const canonical=value=>JSON.stringify(Object.fromEntries(Object.keys(value).sort().map(k=>[k,value[k]])));
 const newer=(a,b)=>{if(!/^\d+\.\d+\.\d+$/.test(a)||!/^\d+\.\d+\.\d+$/.test(b))return false;const x=a.split('.').map(Number),y=b.split('.').map(Number);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]>y[i];return false;};

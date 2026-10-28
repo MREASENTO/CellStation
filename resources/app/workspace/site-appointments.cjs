@@ -30,19 +30,21 @@ function classify(rows,store,freshAccounts) {
 class SiteAppointments {
   constructor(store,root,{clock=Date.now,canStart=()=>true,workerFactory=(s,r)=>new BrowserWorker(s,r),open=openEquipment,components=calendarComponents}={}) {
     Object.assign(this,{store,root,clock,canStart,workerFactory,open,components});this.generation=0;this.rawRows=[];this.deviceRanges={};
-    this.file=path.join(path.dirname(store.file),'site-appointments-cache.json');this.state={status:'idle',rows:[],message:'每日更新一次，读取当天起未来7天预约。'};
+    this.file=path.join(path.dirname(store.file),'site-appointments-cache.json');this.state={status:'idle',rows:[],message:'缓存今天起8天预约；预约确认后即时增量同步。'};
     try {
       const c=JSON.parse(fs.readFileSync(this.file,'utf8'));
       if(c.checkedAt!==undefined&&c.checkedAt!==null&&(!Number.isFinite(c.checkedAt)||!validDate(c.rangeStart)||!validDate(c.rangeEnd)))throw new Error('缓存时间无效');
-      if(c.version!==1||!Array.isArray(c.rows)||c.rows.length>50000||c.rows.some(r=>!r||!Number.isFinite(r.start)||!Number.isFinite(r.end)||r.end<=r.start||!Number.isSafeInteger(r.equipmentId)||typeof r.websiteOwner!=='string'||r.profileId!==null&&typeof r.profileId!=='string'))throw new Error('缓存格式无效');
+      if(![1,2].includes(c.version)||!Array.isArray(c.rows)||c.rows.length>50000||c.rows.some(r=>!r||!Number.isFinite(r.start)||!Number.isFinite(r.end)||r.end<=r.start||!Number.isSafeInteger(r.equipmentId)||typeof r.websiteOwner!=='string'||r.profileId!==null&&typeof r.profileId!=='string'))throw new Error('缓存格式无效');
       this.rawRows=c.rows;this.deviceRanges=c.deviceRanges||{};this.lastAttemptDay=validDate(c.lastAttemptDay)?c.lastAttemptDay:null;
-      this.state={status:c.status==='loading'?'partial':['complete','partial','failed','interrupted'].includes(c.status)?c.status:c.checkedAt?'complete':'idle',date:c.rangeStart,rangeStart:c.rangeStart,rangeEnd:c.rangeEnd,checkedAt:c.checkedAt,lastAttemptAt:c.lastAttemptAt,lastAttemptDay:this.lastAttemptDay,cached:true,...classify(this.rawRows,store),deviceRanges:this.deviceRanges,errors:Array.isArray(c.errors)?c.errors.filter(e=>typeof e==='string').slice(0,100):[],message:c.status==='loading'?'上次更新未完成，可手动更新':typeof c.message==='string'?c.message:c.checkedAt?'已加载本地预约缓存':'今日更新未完成，可手动更新'};
+      this.state={status:c.status==='loading'?'partial':['complete','partial','failed','interrupted'].includes(c.status)?c.status:c.checkedAt?'complete':'idle',date:c.rangeStart,rangeStart:c.rangeStart,rangeEnd:c.rangeEnd,checkedAt:c.checkedAt,lastAttemptAt:c.lastAttemptAt,lastAttemptDay:this.lastAttemptDay,cached:true,lastUpdateKind:c.lastUpdateKind,...classify(this.rawRows,store),deviceRanges:this.deviceRanges,errors:Array.isArray(c.errors)?c.errors.filter(e=>typeof e==='string').slice(0,100):[],message:c.status==='loading'?'上次更新未完成，可手动更新':typeof c.message==='string'?c.message:c.checkedAt?'已加载本地预约缓存':'今日更新未完成，可手动更新'};
     } catch(error){if(error.code!=='ENOENT')this.state.message='预约缓存不可用，将在今日更新时重新读取';}
+    if(this.state.checkedAt&&this.state.rangeEnd<addDays(shanghaiDate(this.clock()),7))this.lastAttemptDay=null;
+    this.rollWindow(false);
   }
   get active(){return Boolean(this.task);}
-  publicState(){return structuredClone(this.state);}
+  publicState(){this.rollWindow();return structuredClone(this.state);}
   persist(){
-    const data={version:1,status:this.state.status,message:this.state.message,errors:this.state.errors,rows:this.rawRows,deviceRanges:this.deviceRanges,lastAttemptDay:this.lastAttemptDay,lastAttemptAt:this.state.lastAttemptAt,checkedAt:this.state.checkedAt,rangeStart:this.state.rangeStart,rangeEnd:this.state.rangeEnd};
+    const data={version:2,status:this.state.status,message:this.state.message,errors:this.state.errors,rows:this.rawRows,deviceRanges:this.deviceRanges,lastAttemptDay:this.lastAttemptDay,lastAttemptAt:this.state.lastAttemptAt,lastUpdateKind:this.state.lastUpdateKind,checkedAt:this.state.checkedAt,rangeStart:this.state.rangeStart,rangeEnd:this.state.rangeEnd};
     const temp=this.file+'.'+process.pid+'.tmp';fs.writeFileSync(temp,JSON.stringify(data),{encoding:'utf8',mode:0o600});fs.renameSync(temp,this.file);
   }
   async start(date,{force=false}={}) {
@@ -51,7 +53,7 @@ class SiteAppointments {
   }
   async startLocked(force) {
     if(this.closed)throw new Error('读取服务已关闭');if(this.task)return this.publicState();
-    const today=shanghaiDate(this.clock());
+    this.rollWindow();const today=shanghaiDate(this.clock());
     if(!force&&this.lastAttemptDay===today){this.reclassify();return this.publicState();}
     if(!this.canStart())throw new Error('预约任务正在准备，稍后将自动更新预约缓存');
     const accounts=this.store.data.accounts.filter(a=>a.passwordCipher).map(a=>structuredClone(a)),devices=equipmentList(this.store.data.config);
@@ -60,12 +62,55 @@ class SiteAppointments {
     const known=new Set(knownIdentities(this.store).map(a=>a.accountId)),personal=this.store.data.config.personalAccountId;
     accounts.sort((a,b)=>Number(b.id===personal)-Number(a.id===personal)||Number(known.has(b.id))-Number(known.has(a.id)));
     const worker=this.workerFactory(this.store,this.root),generation=++this.generation;worker.capture=async()=>{};this.worker=worker;
-    this.lastAttemptDay=today;this.state={...this.state,status:'loading',lastAttemptDay:today,lastAttemptAt:this.clock(),message:'正在更新当天起未来7天的预约…'};this.persist();
+    this.lastAttemptDay=today;this.state={...this.state,status:'loading',lastAttemptDay:today,lastAttemptAt:this.clock(),message:'正在更新今天起8天的可变预约数据…'};this.persist();
     this.task=this.scan(today,accounts,devices,worker,generation).catch(error=>{if(this.generation===generation){this.state={...this.state,status:this.rawRows.length?'partial':'failed',message:'今日更新失败，保留已有缓存',errors:[safeError(error)]};this.persist();}}).finally(async()=>{await worker.close().catch(()=>{});if(this.generation===generation){this.task=null;this.worker=null;}});
     return this.publicState();
   }
+  rollWindow(save=true) {
+    const date=shanghaiDate(this.clock()),end=addDays(date,7),from=Date.parse(date+'T00:00:00+08:00'),to=from+8*86400000;
+    if(this.state.rangeStart===date&&this.state.rangeEnd===end)return;
+    this.rawRows=this.rawRows.filter(r=>r.start<to&&r.end>from);
+    for(const [id,r] of Object.entries(this.deviceRanges)){
+      const days=(r.days||[]).filter(d=>validDate(d)&&d>=date&&d<=end);
+      this.deviceRanges[id]={...r,start:days[0]||date,end:days.at(-1)||date,days,dayCheckedAt:Object.fromEntries(Object.entries(r.dayCheckedAt||{}).filter(([d])=>days.includes(d))),weekReadAt:Object.fromEntries(Object.entries(r.weekReadAt||{}).filter(([at])=>Number(at)+7*86400>from/1000&&Number(at)<to/1000))};
+    }
+    const incomplete=equipmentList(this.store.data.config).some(d=>this.deviceRanges[d.equipmentId]?.days?.length!==8);
+    this.state={...this.state,date,rangeStart:date,rangeEnd:end,...classify(this.rawRows,this.store),deviceRanges:this.deviceRanges,...(this.state.status==='complete'&&incomplete?{status:'partial',message:'缓存范围已调整，等待补全今天起8天数据'}:{})};
+    if(save&&!this.closed)this.persist();
+  }
+  mergeCalendar(device,components,from,to,readAt,checkedAt) {
+    this.rollWindow(false);
+    const windowFrom=Date.parse(this.state.rangeStart+'T00:00:00+08:00'),windowTo=windowFrom+8*86400000;
+    from=Math.max(from,windowFrom);to=Math.min(to,windowTo);if(to<=from)return false;
+    const previousRange=this.deviceRanges[device.equipmentId]||{},weekKey=String(weekStart(shanghaiDate(from)));
+    if((previousRange.weekReadAt?.[weekKey]||0)>readAt)return false;
+    const fresh=siteRows(this.state.rangeStart,device,components,8).filter(r=>r.start<to&&r.end>from).map(({content,...r})=>({...r,observedAt:readAt}));
+    const key=r=>r.equipmentId+'|'+r.id+'|'+r.start+'|'+r.end,existing=new Map(this.rawRows.map(r=>[key(r),r]));
+    const ours=new Set(classify(this.rawRows,this.store).rows.filter(r=>r.membership==='ours').map(key));
+    let reusedOwn=0;
+    const rows=this.rawRows.filter(r=>r.equipmentId!==device.equipmentId||r.start>=to||r.end<=from||(r.observedAt||0)>readAt);
+    for(const r of fresh){const old=existing.get(key(r));if(old&&(old.observedAt||0)>readAt)continue;
+      if(old&&ours.has(key(r))&&['equipmentName','profileId','websiteOwner'].every(k=>old[k]===r[k])){rows.push(old);reusedOwn++;}else rows.push(r);
+    }
+    this.rawRows=[...new Map(rows.map(r=>[key(r),r])).values()];
+    const old=this.deviceRanges[device.equipmentId]||{},days=new Set(old.days||[]),dayCheckedAt={...(old.dayCheckedAt||{})};
+    for(let i=0;i<8;i++){const date=addDays(this.state.rangeStart,i),at=windowFrom+i*86400000;if(at>=from&&at+86400000<=to){days.add(date);dayCheckedAt[date]=Math.max(dayCheckedAt[date]||0,checkedAt);}}
+    const sorted=[...days].filter(d=>d>=this.state.rangeStart&&d<=this.state.rangeEnd).sort();
+    this.deviceRanges[device.equipmentId]={start:sorted[0]||this.state.rangeStart,end:sorted.at(-1)||this.state.rangeStart,checkedAt:Math.max(old.checkedAt||0,checkedAt),days:sorted,dayCheckedAt,weekReadAt:{...(old.weekReadAt||{}),[weekKey]:readAt}};
+    this.state={...this.state,checkedAt:Math.max(this.state.checkedAt||0,checkedAt),...classify(this.rawRows,this.store),deviceRanges:this.deviceRanges,lastMerge:{equipmentId:device.equipmentId,received:fresh.length,reusedOwn,readAt,checkedAt}};
+    return true;
+  }
+  acceptCalendar(job,snapshot) {
+    if(this.closed)return false;
+    const device=equipmentList(this.store.data.config).find(d=>d.equipmentId===job.equipment?.equipmentId&&d.equipmentName===job.equipment?.equipmentName);
+    if(!device||!snapshot||!Array.isArray(snapshot.components)||snapshot.components.length>50000||!Number.isFinite(snapshot.weekStart)||!Number.isFinite(snapshot.checkedAt))return false;
+    const changed=this.mergeCalendar(device,snapshot.components,snapshot.weekStart*1000,(snapshot.weekStart+7*86400)*1000,snapshot.readAt??snapshot.checkedAt,snapshot.checkedAt);
+    if(!changed)return false;
+    if(!this.task)this.state.status=equipmentList(this.store.data.config).every(d=>this.deviceRanges[d.equipmentId]?.days?.length===8)&&this.state.complete?'complete':'partial';
+    this.state.lastUpdateKind='booking';this.state.message='已复用网站读回结果，同步预约缓存；相同的本团队记录继续复用';this.persist();return true;
+  }
   async scan(date,accounts,devices,worker,generation) {
-    const rows=[],errors=[],readDevices=new Set(),deviceErrors=new Map(),rangeEnd=addDays(date,6),weeks=[...new Set([weekStart(date),weekStart(rangeEnd)])];
+    const errors=[],readDevices=new Set(),deviceErrors=new Map(),rangeEnd=addDays(date,7),weeks=[...new Set([weekStart(date),weekStart(rangeEnd)])];
     const freshAccounts=new Set(knownIdentities(this.store).map(a=>a.accountId));
     for(const account of accounts){
       if(generation!==this.generation)return;let session;
@@ -75,10 +120,13 @@ class SiteAppointments {
         for(const device of devices){
           if(generation!==this.generation)return;if(readDevices.has(device.equipmentId))continue;
           try {
-            await this.open(session.page,rulesFor(device));const all=[];
-            for(const week of weeks){if(generation!==this.generation)return;all.push(...await this.components(session.page,week));}
-            const unique=[...new Map(all.map(c=>[String(c.id)+'|'+c.dtStart+'|'+c.dtEnd,c])).values()];
-            rows.push(...siteRows(date,device,unique,7));readDevices.add(device.equipmentId);deviceErrors.delete(device.equipmentId);
+            await this.open(session.page,rulesFor(device));
+            for(const week of weeks){
+              if(generation!==this.generation)return;const readAt=this.clock(),components=await this.components(session.page,week);
+              if(generation!==this.generation)return;
+              this.mergeCalendar(device,components,week*1000,(week+7*86400)*1000,readAt,this.clock());this.persist();
+            }
+            readDevices.add(device.equipmentId);deviceErrors.delete(device.equipmentId);
           }catch(error){deviceErrors.set(device.equipmentId,device.equipmentName+'：'+safeError(error));}
         }
         try{const href=await session.page.locator('a.user').getAttribute('href',{timeout:10000}),profileId=href?.match(/index[.](\d+)/)?.[1];if(!profileId||!recordIdentity(this.store,account.id,profileId,account))throw new Error('账号身份未能确认');freshAccounts.add(account.id);}
@@ -88,13 +136,8 @@ class SiteAppointments {
       if(readDevices.size===devices.length&&this.store.data.accounts.every(a=>freshAccounts.has(a.id)))break;
     }
     if(generation!==this.generation)return;
-    const at=this.clock(),from=Date.parse(date+'T00:00:00+08:00'),to=from+7*86400000,keepFrom=from-7*86400000;
-    // Retain recent past columns, and preserve older data for a device whose update failed.
-    const previous=this.rawRows.filter(r=>r.end>keepFrom&&(!readDevices.has(r.equipmentId)||r.end<=from||r.start>=to));
-    this.rawRows=[...new Map([...previous,...rows].map(({content,...r})=>[r.equipmentId+'|'+r.id+'|'+r.start+'|'+r.end,r])).values()];
-    for(const id of readDevices){const old=this.deviceRanges[id],days=new Set(old?.days||[]);for(let i=0;i<7;i++)days.add(addDays(date,i));this.deviceRanges[id]={start:date,end:rangeEnd,checkedAt:at,days:[...days].filter(d=>validDate(d)&&d>=addDays(date,-7)&&d<=rangeEnd).sort()};}
     errors.push(...deviceErrors.values());const result=classify(this.rawRows,this.store);
-    this.state={...this.state,status:readDevices.size===devices.length&&result.complete?'complete':readDevices.size?'partial':'failed',date,rangeStart:readDevices.size?date:this.state.rangeStart,rangeEnd:readDevices.size?rangeEnd:this.state.rangeEnd,checkedAt:readDevices.size?at:this.state.checkedAt,lastAttemptDay:this.lastAttemptDay,...result,deviceRanges:this.deviceRanges,errors,message:readDevices.size?'每日预约缓存已更新':'今日更新失败，保留已有缓存'};this.persist();
+    this.state={...this.state,status:readDevices.size===devices.length&&devices.every(d=>this.deviceRanges[d.equipmentId]?.days?.length===8)&&result.complete?'complete':this.rawRows.length||readDevices.size?'partial':'failed',lastAttemptDay:this.lastAttemptDay,...result,deviceRanges:this.deviceRanges,errors,lastUpdateKind:'daily',message:readDevices.size?'今天起8天预约缓存已更新；相同的本团队记录继续复用':'今日更新失败，保留已有缓存'};this.persist();
   }
   reclassify(){if(!this.rawRows)return;Object.assign(this.state,classify(this.rawRows,this.store),{deviceRanges:this.deviceRanges});}
   async tick(){
