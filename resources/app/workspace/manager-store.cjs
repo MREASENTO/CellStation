@@ -16,6 +16,8 @@ class ManagerStore {
     this.data.config.teamMembers=require('./site-identity.cjs').validateTeam(this.data.config.teamMembers||[]);
     if(this.data.config.catchUpEnabled===undefined)this.data.config.catchUpEnabled=true;
     if(typeof this.data.config.catchUpEnabled!=='boolean')throw new Error('自动补尝试设置无效');
+    if(this.data.config.reviewRebookEnabled===undefined)this.data.config.reviewRebookEnabled=true;
+    if(typeof this.data.config.reviewRebookEnabled!=='boolean')throw new Error('首次复核后补约设置无效');
     this.data.config.equipment ||= require('./equipment.cjs').defaultEquipment();
     this.data.config.equipments = require('./equipment.cjs').validateEquipmentList(this.data.config.equipments || [this.data.config.equipment]);
     this.data.config.theme ||= 'system';
@@ -37,7 +39,7 @@ class ManagerStore {
     this.data.assignmentRevision ||= 0;
     this.data.config.retentionPolicy = require('./retention.cjs').validateRetention({ ...require('./retention.cjs').defaults, ...this.data.config.retentionPolicy });
     this.data.config.exclusions ||= [];
-    this.data.config.reviewPolicy=validateReviewPolicy({...defaults().reviewPolicy,...this.data.config.reviewPolicy});
+    this.data.config.reviewPolicy=validateReviewPolicy(this.data.config.reviewPolicy||defaults().reviewPolicy);
     this.data.config.retryPolicy = validateRetryPolicy({ ...defaults().retryPolicy, ...this.data.config.retryPolicy });
     // A crash after entering saving may have created a booking. Never silently resubmit.
     for (const job of Object.values(this.data.jobs)) {
@@ -227,7 +229,8 @@ class ManagerStore {
   }
   setPersonalAccount(id) {if(id!==null&&(typeof id!=='string'||!this.data.accounts.some(a=>a.id===id)))throw new Error('请选择已保存的账号');this.data.config.personalAccountId=id;this.event('config',id?'本人账号已设置':'本人账号已取消');}
   setCatchUpEnabled(enabled) {if(typeof enabled!=='boolean')throw new Error('自动补尝试设置无效');this.data.config.catchUpEnabled=enabled;this.event('config',enabled?'已开启已开放计划的自动补尝试':'已关闭已开放计划的自动补尝试');}
-  setReviewPolicy(policy) { this.data.config.reviewPolicy=validateReviewPolicy(policy);this.event('config',`再次复核间隔已保存：${policy.retryIntervalMinutes}分钟`); }
+  setReviewRebookEnabled(enabled){if(typeof enabled!=='boolean')throw new Error('首次复核后补约设置无效');this.data.config.reviewRebookEnabled=enabled;this.event('config',enabled?'已开启首次复核后尝试补约':'已关闭首次复核后尝试补约');}
+  setReviewPolicy(policy) { this.data.config.reviewPolicy=validateReviewPolicy(policy);this.event('config',`复核等待时间已保存：${this.data.config.reviewPolicy.retryIntervalSeconds}秒`); }
   setRetryPolicy(policy) {
     this.data.config.retryPolicy = validateRetryPolicy(policy);
     this.event('config', `重试次数已保存：预约失败${policy.taskRetries}次，验证码刷新${policy.captchaRetries}次（均不含首次）`);
