@@ -116,6 +116,16 @@ class BrowserWorker {
     try { return await catalogue(session.page, name); }
     finally { await session.context.close().catch(() => {}); this.contexts.delete(session.context); await this.closeIdle(); }
   }
+  async detectEquipment(name) {
+    if(typeof name!=='string'||!name.trim()||name.length>200)throw new Error('请输入有效的设备名称');
+    const account=this.store.accounts().find(a=>a.enabled&&a.hasPassword);if(!account)throw new Error('请先启用一个已保存密码的账号');
+    const session=await this.session(account.id,true);
+    try{
+      const candidates=await catalogue(session.page,name),exact=candidates.filter(c=>require('./equipment.cjs').normalizeName(c.equipmentName)===require('./equipment.cjs').normalizeName(name)),matches=exact.length?exact:candidates;
+      if(matches.length!==1)return{recognized:false,candidates,message:matches.length?'检测到多个设备，请补充完整名称或从检索结果选择':'未识别到匹配设备，请核对名称'};
+      const equipment=await verifyTarget(session.page,matches[0]);return{recognized:true,equipment,candidates,message:'设备已识别，预约日历可以访问；未提交预约'};
+    }finally{await session.context.close().catch(()=>{});this.contexts.delete(session.context);await this.closeIdle();}
+  }
   async validateEquipment(equipment) {
     const account = this.store.accounts().find(a => a.enabled && a.hasPassword);
     if (!account) throw new Error('请先启用一个账号');

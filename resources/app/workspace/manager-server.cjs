@@ -34,10 +34,11 @@ async function createManager(options = {}) {
   let reviews;
   let siteAppointments;
   let wechat;
+  let equipmentTesting=false;
   const startupNotifications=new Map();
   let controlRevision = 0;
   let pendingStart = false;
-  const ensureIdle = () => { if(siteAppointments?.active)throw new Error('正在读取网站预约，请稍后操作'); if (reviews?.active) throw new Error('核对正在进行或网页尚未关闭，请稍后操作'); if (scheduler?.busy.size) throw new Error('上一任务仍在执行或核对结果，请稍后再操作'); };
+  const ensureIdle = () => { if(equipmentTesting)throw new Error('设备检测正在进行，请稍后操作'); if(siteAppointments?.active)throw new Error('正在读取网站预约，请稍后操作'); if (reviews?.active) throw new Error('核对正在进行或网页尚未关闭，请稍后操作'); if (scheduler?.busy.size) throw new Error('上一任务仍在执行或核对结果，请稍后再操作'); };
   const loginTests = new Set();
   const server = http.createServer(async (req, res) => {
     const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
@@ -59,7 +60,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.10' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '1.0.11' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -148,6 +149,11 @@ async function createManager(options = {}) {
         if (req.method === 'PUT' && url.pathname === '/api/theme') {
           const { theme } = await body(req); store.setTheme(theme); options.desktopIntegration?.update({ theme }); return send(200, { theme });
         }
+        if(req.method==='POST'&&url.pathname==='/api/equipment/detect'){
+          ensureIdle();const {name}=await body(req);
+          if(store.data.config.enabled&&scheduler.plan(1).some(j=>j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+180000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))throw new Error('临近预约开放，请在任务结束后检测设备');
+          equipmentTesting=true;try{return send(200,await worker.detectEquipment(name));}finally{equipmentTesting=false;}
+        }
         if (req.method === 'POST' && url.pathname === '/api/equipment/search') {
           const { name } = await body(req); return send(200, { candidates: await worker.searchEquipment(name) });
         }
@@ -155,6 +161,11 @@ async function createManager(options = {}) {
           const equipment = require('./equipment.cjs').validateEquipment(await body(req));
           const verified = await worker.validateEquipment(equipment);
           store.setEquipment(verified); return send(200, { equipment: store.data.config.equipment });
+        }
+        if(req.method==='PUT'&&url.pathname==='/api/equipment/schedule'){
+          const input=await body(req),current=store.data.config.equipments.find(e=>e.equipmentId===input.equipmentId);if(!current)throw new Error('设备不存在，请刷新列表');
+          const bookingSchedule=require('./equipment.cjs').validateBookingSchedule(input.bookingSchedule);
+          store.setEquipments(store.data.config.equipments.map(e=>e.equipmentId===input.equipmentId?{...e,bookingSchedule}:e));return send(200,{equipment:store.data.config.equipments.find(e=>e.equipmentId===input.equipmentId)});
         }
         if (req.method === 'PUT' && url.pathname === '/api/equipments') {
           const items = require('./equipment.cjs').validateEquipmentList((await body(req)).equipments);
@@ -250,13 +261,13 @@ async function createManager(options = {}) {
     }
     scheduler = new Scheduler(store, worker, clock);
     operations = new Operations({ root: options.operationsRoot || options.directory || ROOT, store, worker, clock, desktop: options.desktopIntegration, localCheck: options.localCheck, onProgress: options.onStartupProgress, canMaintain: () => !scheduler.busy.size && !pendingStart && (!store.data.config.enabled || !scheduler.plan(1).some(j => j.releaseAt >= clock() - 60000 && j.releaseAt <= clock() + 120000)) });
-    reviews = options.reviewFactory ? options.reviewFactory(store) : new (require('./reviews.cjs').Reviews)(store,options.operationsRoot||ROOT,{clock,canRun:job=>!siteAppointments?.active&&!operations.checkPromise&&!loginTests.has(job.accountId)&&![...scheduler.activeAccounts.values()].includes(job.accountId)&&![...scheduler.prepared.keys()].some(id=>store.data.jobs[id]?.accountId===job.accountId)&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.accountId===job.accountId&&j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
+    reviews = options.reviewFactory ? options.reviewFactory(store) : new (require('./reviews.cjs').Reviews)(store,options.operationsRoot||ROOT,{clock,canRun:job=>!equipmentTesting&&!siteAppointments?.active&&!operations.checkPromise&&!loginTests.has(job.accountId)&&![...scheduler.activeAccounts.values()].includes(job.accountId)&&![...scheduler.prepared.keys()].some(id=>store.data.jobs[id]?.accountId===job.accountId)&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.accountId===job.accountId&&j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
     for(const job of startupNotifications.values())store.onJob(store.data.jobs[job.id]||job);startupNotifications.clear();
     for(const job of Object.values(store.data.jobs))if(job.status==='needs_review'&&job.review?.manualRequired&&clock()-(job.review.checkedAt||0)<86400000)wechat.enqueue(job);
-    siteAppointments=options.siteAppointmentsFactory?options.siteAppointmentsFactory(store):new (require('./site-appointments.cjs').SiteAppointments)(store,options.operationsRoot||ROOT,{clock,canStart:()=>!operations.checkPromise&&!loginTests.size&&!reviews.active&&!scheduler.busy.size&&!scheduler.prepared.size&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
+    siteAppointments=options.siteAppointmentsFactory?options.siteAppointmentsFactory(store):new (require('./site-appointments.cjs').SiteAppointments)(store,options.operationsRoot||ROOT,{clock,canStart:()=>!equipmentTesting&&!operations.checkPromise&&!loginTests.size&&!reviews.active&&!scheduler.busy.size&&!scheduler.prepared.size&&(!store.data.config.enabled||!scheduler.plan(1).some(j=>j.releaseAt>=clock()-60000&&j.releaseAt<=clock()+120000&&!['success','already_exists','failed','needs_review','missed'].includes(store.data.jobs[j.id]?.status)))});
     worker.onCalendar=reviews.onCalendar=(job,snapshot)=>siteAppointments.acceptCalendar?.(job,snapshot);
     scheduler.beforeJobs=(now,jobs,records)=>{siteAppointments.interruptIfCritical?.(now,jobs,records);if(Object.values(records).some(j=>j.status==='needs_review'&&j.review?.state==='waiting'&&j.review.nextAt<=now))siteAppointments.cancel('正在核对预约，请稍后刷新网站预约').catch(()=>{});};
-    scheduler.externalBusy=accountId=>Boolean(siteAppointments.active||reviews.isAccountBusy?.(accountId));
+    scheduler.externalBusy=accountId=>Boolean(equipmentTesting||siteAppointments.active||reviews.isAccountBusy?.(accountId));
     if (options.runScheduler !== false) reviews.start();
     if (options.runScheduler !== false) operations.start();
     if (options.runScheduler !== false) await scheduler.start();

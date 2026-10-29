@@ -30,7 +30,7 @@ class Scheduler {
       const lockedId = this.store.data.bindings[`${job.date}|${job.windowId}`] || mapping[job.windowId];
       if (!lockedId) return { ...job, accountId: null, accountOwner: '', accountLabel: '未分配账号', available: false };
       const account = accounts.find(a => a.id === lockedId);
-      const window = windowsFor(this.store.data.config, job.date).find(w => w.id === job.windowId);
+      const window = require('./equipment.cjs').effectiveWindows(this.store.data.config,job.date,job.equipment).find(w => w.id === job.windowId);
       return { ...job, accountId: lockedId, accountLabel: account?.owner || account?.username || '账号不可用', accountOwner: account?.owner || '', available: Boolean(job.equipmentEnabled && window.enabled && account?.enabled && !job.skipped), locked: Boolean(this.store.data.bindings[`${job.date}|${job.windowId}`]), shuffled: true };
     }).filter(job => includeDisabled || job.available);
   }
@@ -90,7 +90,7 @@ class Scheduler {
         const startsAt=Date.parse(`${job.date}T${job.start}:00+08:00`);
         const account=this.store.data.accounts.find(a=>a.id===job.accountId&&a.enabled);
         const equipment=(config.equipments||[config.equipment]).find(e=>e.equipmentId===(job.equipment?.equipmentId||37)&&e.enabled!==false);
-        const stillAssigned=windowsFor(config,job.date).some(w=>w.id===job.windowId&&w.enabled)&&this.store.assignment(job.date)[job.windowId]===job.accountId;
+        const stillAssigned=require('./equipment.cjs').equipmentJobAllowed(config,job)&&this.store.assignment(job.date)[job.windowId]===job.accountId;
         if (now >= startsAt || !account || !equipment || !stillAssigned || saveAttempted(record)) {
           this.store.job(job,{...(saveAttempted(record)?{status:'needs_review'}:{}),recovery:{...record.recovery,state:'stopped'},message:now>=startsAt?'已到原使用时段，停止网站恢复重试':!stillAssigned||!account||!equipment?'原计划配置已修改，停止网站恢复重试':'已进入保存阶段，停止补约并保留核对记录'});
           continue;
@@ -150,9 +150,11 @@ class Scheduler {
     return task;
   }
   assignmentMatches(job) {
+    const currentDevice=require('./equipment.cjs').equipmentList(this.store.data.config).find(e=>e.equipmentId===(job.equipment?.equipmentId||37));
+    if((currentDevice?.bookingSchedule||job.equipment?.bookingSchedule)&&!require('./equipment.cjs').equipmentJobAllowed(this.store.data.config,job))return false;
     const plan = this.store.data.dailyAssignments[job.date];
     if (!job.runtime || (plan?.manualRevision || 0) === job.runtime.manualRevision) return true;
-    return Boolean(windowsFor(this.store.data.config, job.date).find(w => w.id === job.windowId)?.enabled && this.store.assignment(job.date)[job.windowId] === job.accountId);
+    return Boolean(require('./equipment.cjs').equipmentJobAllowed(this.store.data.config,job) && this.store.assignment(job.date)[job.windowId] === job.accountId);
   }
   async discardPreparation(job) {
     this.prepared.delete(job.id);
@@ -165,7 +167,7 @@ class Scheduler {
   }
   async prepare(job) {
     job = this.snapshot(job);
-    const otherWindow = Object.entries(this.store.data.bindings).some(([key, accountId]) => key.startsWith(job.date + '|') && key !== `${job.date}|${job.windowId}` && accountId === job.accountId);
+    const otherWindow = Object.entries(this.store.data.bindings).some(([key, accountId]) => key.startsWith(job.date + '|') && key !== `${job.date}|${job.windowId}` && require('./schedule-logic.cjs').assignmentWindows(this.store.data.config,job.date).some(w=>w.id===key.split('|')[1]&&w.enabled) && accountId === job.accountId);
     if (otherWindow) {
       this.store.job(job, { status: 'failed', recovery:this.finishedRecovery(job,'stopped'), message: '该账号当天已锁定另一个两小时窗口，未跨窗口加约' });
       return;

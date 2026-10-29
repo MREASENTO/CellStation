@@ -121,7 +121,8 @@ class Reviews {
     if(now>=plan.start*1000)throw new Error('原使用时段已开始，未执行补约');if(now<(plan.end-target.rules.release.advanceDays*86400)*1000)throw new Error('原时段尚未开放，未执行补约');
     const current=this.store.data.accounts.find(a=>a.id===account.id);if(!current?.enabled||current.username!==account.username||current.revision!==account.revision)throw new Error('原账号配置已变化，未执行补约');
     if(!(config.equipments||[config.equipment]).some(e=>e.enabled!==false&&e.equipmentId===target.rules.equipmentId&&e.equipmentName===target.rules.equipmentName))throw new Error('原设备配置已变化，未执行补约');
-    if(job.windowId){if(!windowsFor(config,job.date).some(w=>w.id===job.windowId&&w.enabled)||this.store.assignment(job.date)[job.windowId]!==account.id||(config.exclusions||[]).some(e=>e.date===job.date&&e.windowIds.includes(job.windowId)))throw new Error('原计划已修改或跳过，未执行补约');}
+    if(job.windowId){if(!require('./equipment.cjs').equipmentJobAllowed(config,job)||this.store.assignment(job.date)[job.windowId]!==account.id||(config.exclusions||[]).some(e=>e.date===job.date&&e.windowIds.includes(job.windowId)))throw new Error('原计划已修改或跳过，未执行补约');}
+    if(!require('./equipment.cjs').equipmentDateAllowed((config.equipments||[config.equipment]).find(e=>e.equipmentId===target.rules.equipmentId),job.date))throw new Error('原日期已移出设备预约范围，未执行补约');
     if(!this.canRun(job))throw new Error('其他预约即将执行，未执行本次补约');
     if(this.store.data.jobs[job.id]?.status!=='needs_review')throw new Error('原预约状态已变化，未执行补约');
   }
@@ -161,7 +162,7 @@ class Reviews {
       const current=this.store.data.jobs[id];if(current)this.observe(current);const target=this.target(id),job=target.job;
       if(['success','already_exists'].includes(job.status))return{verified:true,message:'该预约已经确认，无需再次核对'};
       const limit=job.review?.protocol===3?3:2;if(automatic&&(job.review?.autoAttempts||0)>=limit)return{verified:false,manualRequired:true,message:'自动复核已结束，请自主复核。'};
-      if(!this.canRun(job))throw new Error('该账号正在准备或执行预约，请稍后核对');if(this.sessions.has(id))throw new Error('该记录的核对网页已打开，请关闭后再由程序核对');
+    if(!this.canRun(job))throw new Error('该账号正在准备或执行预约，请稍后核对');if(this.sessions.has(id))throw new Error('该记录的核对网页已打开，请关闭后再由程序核对');
       const stage=job.status==='needs_review'&&job.review?.protocol>=2&&job.review.stage!=='finished'?job.review.stage:'manual',startedAt=this.clock();let entry;
       try{
         if(stage==='rebook')return await this.afterFirst(target,entry,automatic);
@@ -200,7 +201,7 @@ class Reviews {
     const action=this.run(id,async()=>{
       const existing=this.sessions.get(id);if(existing?.visible&&!existing.page?.isClosed()){await existing.page.bringToFront();return {opened:true,ready:true,message:'已打开预约日历'};}
       const date=require('./schedule-logic.cjs').shanghaiDate(this.clock()),job={id,accountId:account.id,date},target={job,account:structuredClone(account),rules:rulesFor(equipment)};
-      if(!this.canRun(job))throw new Error('该账号正在执行预约，请稍后打开');
+    if(!this.canRun(job))throw new Error('该账号正在执行预约，请稍后打开');
       try{const entry=await this.session(target,true);await this.week(entry.page,Date.parse(date+'T00:00:00+08:00')/1000);await entry.page.bringToFront();return {opened:true,ready:true,message:'已登录并打开预约日历'};}
       catch(error){const entry=this.sessions.get(id);if(entry?.page&&!entry.page.isClosed()){await entry.page.bringToFront().catch(()=>{});return {opened:true,ready:false,message:'预约网站已打开，请完成登录或选择设备：'+safeError(error)};}this.sessions.delete(id);await entry?.browser.close().catch(()=>{});throw error;}
     });
