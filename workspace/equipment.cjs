@@ -20,9 +20,36 @@ function equipmentList(config, includeDisabled = false) {
 const slotKey = job => `${job.equipment?.equipmentId || 37}|${job.date}|${job.start}|${job.end}`;
 function validateEquipment(input) {
   if (!input || !Number.isSafeInteger(input.equipmentId) || input.equipmentId <= 0 || typeof input.equipmentName !== 'string' || !input.equipmentName.trim() || input.equipmentName.length > 200) throw new Error('仪器信息无效，请按名称检索并选择实际仪器');
-  return { equipmentId: input.equipmentId, equipmentName: input.equipmentName.trim(), equipmentModel: String(input.equipmentModel || '').slice(0, 120) };
+  return { equipmentId: input.equipmentId, equipmentName: input.equipmentName.trim(), equipmentModel: String(input.equipmentModel || '').slice(0, 120),...(input.bookingSchedule?{bookingSchedule:validateBookingSchedule(input.bookingSchedule)}:{}) };
 }
-function rulesFor(equipment) { return { ...structuredClone(base), ...validateEquipment(equipment || defaultEquipment()) }; }
+function validateBookingSchedule(value) {
+  if(value===undefined||value===null)return null;
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('设备预约计划无效');
+  const {validDate,WINDOWS}=require('./schedule-logic.cjs'),dateMode=value.dateMode||'all';
+  if(!['all','single','range'].includes(dateMode))throw new Error('请选择有效的设备预约日期方式');
+  const dateFrom=dateMode==='all'?'':value.dateFrom,dateTo=dateMode==='single'?dateFrom:dateMode==='all'?'':value.dateTo;
+  if(dateMode!=='all'&&(!validDate(dateFrom)||!validDate(dateTo)||dateTo<dateFrom))throw new Error('设备日期范围无效，结束日期不得早于开始日期');
+  let windows=null;
+  if(value.windows!==undefined&&value.windows!==null){
+    if(!Array.isArray(value.windows)||value.windows.length!==5||new Set(value.windows.map(w=>w?.id)).size!==5)throw new Error('设备需保留五个窗口，可分别关闭');
+    const minute=s=>{if(typeof s!=='string'||!/^([01]\d|2[0-3]):(00|30)$/.test(s))throw new Error('时段需采用整点或半点，且在同一天内');return Number(s.slice(0,2))*60+Number(s.slice(3));};
+    windows=WINDOWS.map(f=>{const w=value.windows.find(w=>w.id===f.id);if(!w||typeof w.enabled!=='boolean'||minute(w.end)<=minute(w.start))throw new Error('设备窗口开始时间需早于结束时间');return{id:f.id,enabled:w.enabled,start:w.start,end:w.end};});
+    const selected=windows.filter(w=>w.enabled).sort((a,b)=>minute(a.start)-minute(b.start));
+    if(selected.some((w,i)=>i&&minute(w.start)<minute(selected[i-1].end)))throw new Error('同一设备的启用窗口不可重叠');
+  }
+  return{dateMode,dateFrom,dateTo,windows};
+}
+function equipmentDateAllowed(equipment,date){const s=equipment?.bookingSchedule;return !s||s.dateMode==='all'||date>=s.dateFrom&&date<=s.dateTo;}
+function effectiveWindows(config,date,equipment){
+  const {WINDOWS,windowsFor}=require('./schedule-logic.cjs');
+  return equipment?.bookingSchedule?.windows||WINDOWS.map(w=>({...w,enabled:Boolean(windowsFor(config,date).find(x=>x.id===w.id)?.enabled)}));
+}
+function equipmentJobAllowed(config,job){
+  const e=equipmentList(config).find(e=>e.equipmentId===(job.equipment?.equipmentId||defaultEquipment().equipmentId));
+  if(!e||job.equipment?.equipmentName&&job.equipment.equipmentName!==e.equipmentName||!equipmentDateAllowed(e,job.date))return false;
+  return effectiveWindows(config,job.date,e).some(w=>(!job.windowId||w.id===job.windowId)&&w.enabled&&job.start>=w.start&&job.end<=w.end);
+}
+function rulesFor(equipment) { const e=validateEquipment(equipment||defaultEquipment());return { ...structuredClone(base), ...e,...(e.bookingSchedule?.windows?{dailyWindows:e.bookingSchedule.windows.filter(w=>w.enabled).map(w=>[w.start,w.end])}:{}) }; }
 async function catalogue(page, name) {
   if (typeof name !== 'string' || !name.trim() || name.length > 200) throw new Error('请填写200字以内的仪器名称');
   const menu = page.locator('a.item_content[href$="!equipments/index"]');
@@ -54,4 +81,4 @@ async function verifyTarget(page, equipment) {
   if (!calendarId || !/^\d+$/.test(calendarId)) throw new Error('仪器没有可确认的预约日历');
   return { ...match, calendarId: Number(calendarId) };
 }
-module.exports = { defaultEquipment, validateEquipment, validateEquipmentList, equipmentList, slotKey, normalizeName, rulesFor, catalogue, verifyTarget };
+module.exports = { validateBookingSchedule, equipmentDateAllowed, effectiveWindows, equipmentJobAllowed, defaultEquipment, validateEquipment, validateEquipmentList, equipmentList, slotKey, normalizeName, rulesFor, catalogue, verifyTarget };

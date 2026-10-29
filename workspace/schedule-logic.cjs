@@ -37,6 +37,11 @@ function validateWindows(windows, accounts) {
   if (accounts.filter(a => a.enabled).length > 5) throw new Error('最多启用5个账号，请先停用一个账号');
 }
 function windowsFor(config, date) { return config.dateWindows?.[date] || config.windows; }
+function assignmentWindows(config,date){
+  const {equipmentList,equipmentDateAllowed,effectiveWindows}=require('./equipment.cjs'),devices=equipmentList(config).filter(e=>equipmentDateAllowed(e,date));
+  if(!devices.some(e=>e.bookingSchedule?.windows))return windowsFor(config,date);
+  return WINDOWS.map(w=>({id:w.id,enabled:devices.some(e=>effectiveWindows(config,date,e).some(x=>x.id===w.id&&x.enabled))}));
+}
 function validateDateWindows(value) {
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 366) throw new Error('日期窗口配置无效，最多366天');
@@ -54,7 +59,8 @@ function validateSelection(config, accounts) {
   if (count > available) throw new Error(`已选${count}个窗口，但只有${available}个启用账号；请取消多余窗口或启用更多账号`);
 }
 function validateSchedules(config, accounts, now = Date.now()) {
-  validateSelection(config, accounts);
+  const devices=require('./equipment.cjs').equipmentList(config),hasCustom=devices.some(e=>e.bookingSchedule?.windows);
+  if(!hasCustom)validateSelection(config, accounts);else {validateWindows(config.windows,accounts);if(!accounts.some(a=>a.enabled))throw new Error('请先启用至少一个账号');if(!devices.some(e=>require('./equipment.cjs').effectiveWindows(config,shanghaiDate(now),e).some(w=>w.enabled)))throw new Error('请为设备选择至少一个预约窗口');}
   if (!require('./equipment.cjs').equipmentList(config).length) throw new Error('请至少启用一个预约设备');
   for (const [date, windows] of Object.entries(config.dateWindows || {})) if (date >= addDays(shanghaiDate(now), 7)) {
     try { validateSelection({ ...config, windows }, accounts); } catch (e) { throw new Error(`${date} 单日配置：${e.message}`); }
@@ -66,16 +72,17 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
     const triggerDate = addDays(releaseDate, d);
     const targetDate = addDays(triggerDate, 7);
     for (const equipment of require('./equipment.cjs').equipmentList(config, includeDisabled)) {
-    for (const fixed of WINDOWS) {
-      const effective = windowsFor(config, targetDate);
+    for (const fixed of require('./equipment.cjs').effectiveWindows(config,targetDate,equipment)) {
+      const effective = require('./equipment.cjs').effectiveWindows(config,targetDate,equipment);
       const binding = effective.find(w => w.id === fixed.id) || {};
       const pool = accounts.filter(a => a.enabled);
-      const selected = WINDOWS.filter(w => effective.find(b => b.id === w.id)?.enabled);
+      const selected = WINDOWS.filter(w => assignmentWindows(config,targetDate).find(b => b.id === w.id)?.enabled);
       const account = pool[selected.findIndex(w => w.id === fixed.id)];
+      const inDate=require('./equipment.cjs').equipmentDateAllowed(equipment,targetDate);
       const exclusion = (config.exclusions || []).find(e => e.date === targetDate && e.windowIds.includes(fixed.id));
-      const available = Boolean(equipment.enabled !== false && binding.enabled && account?.enabled && !exclusion);
+      const available = Boolean(equipment.enabled !== false && binding.enabled && account?.enabled && !exclusion && inDate);
       if (!includeDisabled && !available) continue;
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < (minuteOf(fixed.end)-minuteOf(fixed.start))/30; i++) {
         const start = clock(minuteOf(fixed.start) + i * 30);
         const end = clock(minuteOf(fixed.start) + (i + 1) * 30);
         const releaseAt = Date.parse(`${triggerDate}T${end}:00+08:00`);
@@ -83,13 +90,14 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
           id: `${equipment.equipmentId}|${targetDate}|${start}|${end}`, equipment, equipmentOrder: equipment.order || 0, equipmentEnabled: equipment.enabled !== false,
           windowId: fixed.id, accountId: account?.id || null, accountLabel: account?.owner || account?.username || '未分配账号', accountOwner: account?.owner || '',
           date: targetDate, start, end, remark: 'cell', releaseAt,
-          available, selected: Boolean(binding.enabled), skipped: Boolean(exclusion), skipReason: exclusion?.reason || '', windowLabel: `${fixed.start}–${fixed.end}`,
+          available, selected: Boolean(binding.enabled), skipped: Boolean(exclusion)||!inDate, skipReason: !inDate?'不在该设备的预约日期范围内':exclusion?.reason || '', windowLabel: `${fixed.start}–${fixed.end}`,
         });
       }
     }
     }
   }
-  return jobs.sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
+  const unique=new Map();for(const job of jobs){const old=unique.get(job.id);if(!old||!old.available&&job.available||!old.selected&&job.selected)unique.set(job.id,job);}
+  return [...unique.values()].sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
 }
 function defaults() {
   return { enabled: false, enabledAt: null, catchUpEnabled:true, reviewRebookEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
@@ -107,4 +115,4 @@ function shuffleAssignments(config, accounts, locked = {}, randomInt = require('
   for (const window of enabled.filter(w => !mapping[w.id])) mapping[window.id] = candidates.shift() || null;
   return mapping;
 }
-module.exports = { WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy, validateReviewPolicy };
+module.exports = { assignmentWindows, WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy, validateReviewPolicy };

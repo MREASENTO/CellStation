@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { WINDOWS, windowsFor, validateDateWindows, validDate, addDays, shanghaiDate, defaults, validateWindows, validateSelection, validateSchedules, shuffleAssignments, validateExclusions, validateRetryPolicy, validateReviewPolicy } = require('./schedule-logic.cjs');
+const { WINDOWS, assignmentWindows, windowsFor, validateDateWindows, validDate, addDays, shanghaiDate, defaults, validateWindows, validateSelection, validateSchedules, shuffleAssignments, validateExclusions, validateRetryPolicy, validateReviewPolicy } = require('./schedule-logic.cjs');
 class ManagerStore {
   constructor(directory, vault = require('./vault.cjs')) {
     fs.mkdirSync(directory, { recursive: true });
@@ -55,29 +55,29 @@ class ManagerStore {
   }
   accounts() { return this.data.accounts.map(({ passwordCipher, ...account }) => ({ ...account, hasPassword: Boolean(passwordCipher) })); }
   assignmentSignature(date) {
-    return JSON.stringify({ windows: windowsFor(this.data.config, date), accounts: this.data.accounts.map(a => [a.id, a.enabled]), shuffle: this.data.config.shuffleDaily });
+    return JSON.stringify({ windows: assignmentWindows(this.data.config, date), equipments:this.data.config.equipments, accounts: this.data.accounts.map(a => [a.id, a.enabled]), shuffle: this.data.config.shuffleDaily });
   }
   lockedAssignments(date) {
-    return Object.fromEntries(Object.entries(this.data.bindings).filter(([key]) => key.startsWith(date + '|')).map(([key, id]) => [key.split('|')[1], id]));
+    return Object.fromEntries(Object.entries(this.data.bindings).filter(([key]) => key.startsWith(date + '|')&&(!this.data.config.equipments.some(e=>e.bookingSchedule?.windows)||assignmentWindows(this.data.config,date).some(w=>w.id===key.split('|')[1]&&w.enabled))).map(([key, id]) => [key.split('|')[1], id]));
   }
   assignment(date, randomInt) {
     const signature = this.assignmentSignature(date), previous = this.data.dailyAssignments[date], locked = this.lockedAssignments(date);
     if (previous?.signature === signature && Object.entries(locked).every(([key, id]) => previous.mapping[key] === id)) return previous.mapping;
     const retained = { ...locked }, reserved = new Set(Object.values(locked));
     // Keep valid, untouched choices when accounts or selected windows change.
-    for (const window of windowsFor(this.data.config, date).filter(w => w.enabled && !retained[w.id])) {
+    for (const window of assignmentWindows(this.data.config, date).filter(w => w.enabled && !retained[w.id])) {
       const id = previous?.mapping[window.id];
       if (id && !reserved.has(id) && this.data.accounts.some(a => a.id === id && a.enabled)) { retained[window.id] = id; reserved.add(id); }
     }
-    const mapping = shuffleAssignments({ ...this.data.config, windows: windowsFor(this.data.config, date) }, this.accounts(), retained, randomInt);
+    const mapping = shuffleAssignments({ ...this.data.config, windows: assignmentWindows(this.data.config, date) }, this.accounts(), retained, randomInt);
     this.data.dailyAssignments[date] = { signature, mapping, mode: previous?.mode || 'auto', manualRevision: previous?.manualRevision || 0, createdAt: new Date().toISOString() };
     this.persist(); return mapping;
   }
   assignmentView(date) {
     if (!validDate(date)) throw new Error('目标预约日期无效');
-    const mapping = this.assignment(date), windows = windowsFor(this.data.config, date);
+    const mapping = this.assignment(date), windows = assignmentWindows(this.data.config, date);
     const revision = crypto.createHash('sha256').update(JSON.stringify({ windows, mapping, accounts: this.accounts().map(a => [a.id, a.enabled]) })).digest('hex');
-    return { date, mapping, locked: {}, windows, customWindows: Boolean(this.data.config.dateWindows[date]), mode: this.data.dailyAssignments[date].mode || 'auto', revision };
+    return { date, mapping, locked: {}, windows, deviceWindows:require('./equipment.cjs').equipmentList(this.data.config).filter(e=>require('./equipment.cjs').equipmentDateAllowed(e,date)).map(e=>({equipmentName:e.equipmentName,windows:require('./equipment.cjs').effectiveWindows(this.data.config,date,e)})), customWindows: Boolean(this.data.config.dateWindows[date]), mode: this.data.dailyAssignments[date].mode || 'auto', revision };
   }
   checkAssignmentEdit(date, revision, now = Date.now()) {
     if (!validDate(date)) throw new Error('目标预约日期无效');
@@ -87,7 +87,7 @@ class ManagerStore {
   }
   saveAssignment(date, mapping, mode, message) {
     // Explicit user edits supersede automatic bindings, including prepared windows.
-    mapping = Object.fromEntries(Object.entries(mapping).filter(([id]) => windowsFor(this.data.config, date).some(w => w.id === id && w.enabled)));
+    mapping = Object.fromEntries(Object.entries(mapping).filter(([id]) => assignmentWindows(this.data.config, date).some(w => w.id === id && w.enabled)));
     const manualRevision = (this.data.dailyAssignments[date]?.manualRevision || 0) + 1;
     for (const key of Object.keys(this.data.bindings)) if (key.startsWith(date + '|')) delete this.data.bindings[key];
     this.data.dailyAssignments[date] = { signature: this.assignmentSignature(date), mapping, mode, manualRevision, createdAt: new Date().toISOString() };
@@ -189,6 +189,7 @@ class ManagerStore {
   }
   setEquipments(items) {
     this.data.config.equipments = require('./equipment.cjs').validateEquipmentList(items);
+    this.data.assignmentRevision++;
     this.data.config.equipment = require('./equipment.cjs').validateEquipment(this.data.config.equipments.find(e => e.enabled) || this.data.config.equipments[0]);
     this.event('config', `设备列表已保存：${this.data.config.equipments.filter(e => e.enabled).length}个启用；同一时段按列表顺序依次预约全部启用设备`);
   }
