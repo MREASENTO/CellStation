@@ -102,10 +102,12 @@ function render() {
 }
 function renderSettings() {
   const d=state.desktopSettings;
+  if(!dirty.has('auto-activation')){$('#setting-plan-auto').checked=state.config.autoActivateByPlan===true;$('#setting-auto-pause').value=state.config.autoActivationPauseSeconds??1800;}
+  renderAutomaticState();
   const importingBlocked=Boolean(state.config.enabled||state.pendingStart||controlPending||state.operations?.health?.running);
   $('#restore-file').disabled=importingBlocked; $('#restore-file').parentElement.classList.toggle('disabled', importingBlocked);
   $('#backup-import-hint').textContent=importingBlocked?'当前正在运行或检测，请先暂停并等待任务结束后导入。':'按登录账号合并；本机其他账号、执行记录和截图保留。';
-  for (const [id,key] of [['setting-autostart','autoStart'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']]) {
+  for (const [id,key] of [['setting-autostart','autoStart'],['setting-start-booking','startBookingOnLaunch'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']]) {
     $('#'+id).disabled=!d; if(!dirty.has('desktop-'+key)) $('#'+id).checked=d?.[key] || false;
   }
   if(!dirty.has('theme')) $('#setting-theme').value=state.config.theme || 'system'; theme();
@@ -119,6 +121,20 @@ function renderSettings() {
   $('#retry-policy-note').textContent='修改后自动保存；当前任务沿用开始时的次数，后续任务使用新设置。0表示关闭短间隔重试；网站恢复重试另按5分钟执行。';
   $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时立即复核；${state.config.reviewRebookEnabled!==false?'未确认先核对空闲并额外补约一次，再即时复核；仍未确认':'未确认'}则等待${state.config.reviewPolicy.retryIntervalSeconds??state.config.reviewPolicy.retryIntervalMinutes*60}秒后最终复核。最终未确认会明确提醒你自主复核。`;
 }
+function renderAutomaticState(now=Date.now()+offset){
+  if(!state)return;const a=state.autoActivation,root=$('#automatic-start-status');if(!a){root.textContent='自动开始状态暂不可用';return;}
+  const left=a.nextAt?Math.max(0,Math.ceil((a.nextAt-now)/1000)):0,count=String(Math.floor(left/3600)).padStart(2,'0')+':'+String(Math.floor(left%3600/60)).padStart(2,'0')+':'+String(left%60).padStart(2,'0');
+  root.textContent=a.message+(a.nextAt?' · '+(a.kind==='resume'?'自动恢复于 ':'计划自动开始于 ')+fmt(a.nextAt,true)+(left?' · 剩余 '+count:''):'');
+  if(!state.config.enabled&&!state.pendingStart&&!controlPending&&state.config.autoActivateByPlan){
+    const caption=a.status==='error'?'自动开始待处理':a.kind==='resume'?(left?'暂停倒计时 '+count:'等待自动恢复'):a.nextAt?'定时待机 · '+fmt(a.nextAt).slice(0,8)+' 自动开始':'定时待机 · 等待预约计划';
+    $('#persistent-run-status').textContent=caption;$('#running-state').textContent=caption;$('#running-state').className='state-chip armed';$('#control-button').textContent='立即开始预约';
+  }
+}
+function saveAutoActivation(){
+  const input=$('#setting-auto-pause');if(!input.value||!input.checkValidity()||!Number.isSafeInteger(Number(input.value))){const pending=timers.get('auto-activation');if(pending)clearTimeout(pending.timer);timers.delete('auto-activation');revisions.set('auto-activation',(revisions.get('auto-activation')||0)+1);dirty.add('auto-activation');saveErrors.set('auto-activation','暂停等待时间需为正整数秒');savedState();return;}
+  const policy={enabled:$('#setting-plan-auto').checked,pauseSeconds:Number(input.value)};autosave('auto-activation',()=>api('auto-activation',policy,'PUT'),150);
+}
+$('#setting-plan-auto').addEventListener('change',saveAutoActivation);$('#setting-auto-pause').addEventListener('input',saveAutoActivation);
 let personalAccountSignature,personalEquipmentSignature;
 function renderPersonal(){
   const account=$('#personal-account'),equipment=$('#personal-equipment');
@@ -360,7 +376,7 @@ function renderHealth() {
 }
 function renderActivity() {const root=$('#activity-list');root.replaceChildren();for(const e of state.events.slice(0,5)){const row=make('div','activity-item');row.append(make('p','',e.message),make('time','',fmt(Date.parse(e.at),true)));root.append(row);} }
 function renderExclusions(){const root=$('#exclusion-list');root.replaceChildren();for(const [i,e] of state.config.exclusions.entries()){const row=make('div','exclusion-entry');row.append(make('b','',e.date+' · '+(e.windowIds.length===5?'整天':e.windowIds.map(id=>state.windows.find(w=>w.id===id)?.start).join('、'))),make('span','',e.reason),button('移除',async()=>{await api('exclusions',{entries:state.config.exclusions.filter((_,n)=>n!==i)},'PUT');preview=null;await refresh();}));root.append(row);} }
-function updateClock(){if(!state)return;const now=Date.now()+offset;syncDates(now);updateSiteClock(now);$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
+function updateClock(){if(!state)return;const now=Date.now()+offset;syncDates(now);updateSiteClock(now);renderAutomaticState(now);$('#clock').textContent=fmt(now);const next=state.plan.find(j=>j.available&&j.releaseAt>now&&!['success','already_exists'].includes(state.jobs.find(r=>r.id===j.id)?.status));$('#stat-next').textContent=next?fmt(next.releaseAt).slice(0,5):'—';$('#stat-next-sub').textContent=next?day(next.releaseAt)+' · '+identity(next):'启用账号后生成计划';$('#next-countdown').textContent=next?'距开放 '+Math.floor((next.releaseAt-now)/60000)+' 分钟':'';}
 function editAccount(a){const f=$('#account-form');f.reset();f.elements.id.value=a?.id||'';f.elements.username.value=a?.username||'';f.elements.username.readOnly=Boolean(a);f.elements.owner.value=a?.owner||'';f.elements.enabled.checked=a?a.enabled:state.accounts.filter(x=>x.enabled).length<5;f.elements.password.required=!a;f.elements.password.placeholder=a?'留空保留密码；输入后移开自动保存':'输入密码以添加账号';$('#account-dialog-title').textContent=a?'编辑账号 · 自动保存':'添加账号';$('#save-account-button').hidden=Boolean(a);$('#password-note').textContent=a?'使用人、密码及启用状态在修改后自动保存，无需确认。':'填写登录账号与密码后点击添加。最多同时启用5个账号。';$('#account-dialog').showModal();}
 function editField(name){const f=$('#account-form');if(!f.elements.id.value)return;const input={id:f.elements.id.value,username:f.elements.username.value};input[name]=name==='enabled'?f.elements.enabled.checked:f.elements[name].value;if(name==='password'&&!input.password)return;autosave('account-'+name,async()=>{await api('accounts',input);if(name==='password')f.elements.password.value='';},name==='password'?0:450);}
 $('#account-form').elements.owner.addEventListener('input',()=>editField('owner'));
@@ -376,7 +392,7 @@ $('#control-button').addEventListener('click',()=>control(!(state.config.enabled
 $('#cancel-start').addEventListener('click',()=>control(false).catch(e=>toast(e.message,true)));
 async function previewPlan(){const date=$('#plan-date').value,request=++previewRequest;try{const result=await api('simulate',{date});if(request!==previewRequest||date!==$('#plan-date').value)return;preview=result;renderPlan();}catch(e){if(request===previewRequest)toast(e.message,true);}}
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
-for(const [id,key] of [['setting-autostart','autoStart'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
+for(const [id,key] of [['setting-autostart','autoStart'],['setting-start-booking','startBookingOnLaunch'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
 $('#setting-catch-up').addEventListener('change',()=>{const enabled=$('#setting-catch-up').checked;autosave('catch-up',()=>api('catch-up',{enabled},'PUT'),0);});
 $('#setting-review-rebook').addEventListener('change',()=>{const enabled=$('#setting-review-rebook').checked;autosave('review-rebook',()=>api('review-rebook',{enabled},'PUT'),0);});
@@ -424,6 +440,7 @@ $('#restore-file').addEventListener('change',async e=>{
     const wrap=make('div','table-wrap'),table=make('table'),head=make('thead'),tr=make('tr');for(const text of ['账号 / 使用人','处理方式','密码处理','导入后状态'])tr.append(make('th','',text));head.append(tr);table.append(head);
     const body=make('tbody');for(const a of r.accountChanges){const row=make('tr');row.append(make('td','',a.username+(a.owner?' / '+a.owner:'')),make('td','',a.action),make('td','',a.password),make('td','',a.enabled?'启用':'停用'));body.append(row);}table.append(body);wrap.append(table);root.append(wrap);
     root.append(make('p','',`将替换：预约窗口 ${r.selectedWindows.join('、')||'未选择'}；跳过日期 ${r.exclusions} 条；预约重试 ${r.retryPolicy.taskRetries} 次；验证码重试 ${r.retryPolicy.captchaRetries} 次；最终复核等待 ${r.reviewPolicy.retryIntervalSeconds??r.reviewPolicy.retryIntervalMinutes*60} 秒；首次复核后补约 ${r.reviewRebookEnabled?'开启':'关闭'}；仪器 ${r.equipment}；主题 ${{light:'白天',dark:'黑夜',system:'随系统'}[r.theme]}。`),make('p','',`团队人员：${r.teamMembers} 人；本人账号：${state.accounts.find(a=>a.id===r.personalAccountId)?.username||'未选择'}；自动处理已开放计划：${r.catchUpEnabled?'开启':'关闭'}。`),make('p','',r.message));if(r.retentionPolicy)root.append(make('p','',`截图与文件日志：${r.retentionPolicy.enabled?'启用':'关闭'}自动维护，${r.retentionPolicy.compressAfterDays}天压缩、${r.retentionPolicy.deleteAfterDays}天清理。`));
+    if(r.autoActivationPolicy)root.append(make('p','',`按计划自动开始：${r.autoActivationPolicy.enabled?'开启':'关闭'}；手动暂停等待 ${r.autoActivationPolicy.pauseSeconds} 秒。开启时，导入后的暂停也会在等待结束后自动恢复。`));
     if(r.equipmentSchedules?.length)for(const e of r.equipmentSchedules){const s=e.bookingSchedule;root.append(make('p','',e.equipmentName+' · '+(!s||s.dateMode==='all'?'不限日期':s.dateFrom+(s.dateMode==='range'?' 至 '+s.dateTo:''))+' · '+(s?.windows?s.windows.filter(w=>w.enabled).map(w=>w.start+'–'+w.end).join('、'):'跟随通用窗口')));}
     if(r.dateDetails?.length){const details=make('details','backup-date-plans'),summary=make('summary','',`查看单日调整：${r.customDates}天自定义时间段、${r.assignmentDays}天已保存分配`);details.append(summary);for(const d of r.dateDetails){details.append(make('p','',d.date+' · '+d.windows.join('、')+' · '+d.accounts.map(a=>(state.windows.find(w=>w.id===a.windowId)?.start||a.windowId)+' '+a.username).join('；')));}root.append(details);}
     if(r.selectionWarning)root.append(make('p','bad',r.selectionWarning));$('#confirm-restore').hidden=false;$('#cancel-restore').hidden=false;
@@ -431,7 +448,7 @@ $('#restore-file').addEventListener('change',async e=>{
 });
 $('#confirm-restore').addEventListener('click',async()=>{
   const button=$('#confirm-restore');button.disabled=true;
-  try{await window.cellStationFlush();const r=await api('backup/restore',{token:restoreToken});clearRestore();const result=$('#restore-result');result.replaceChildren(make('strong','','配置导入成功'),make('p','',`${r.message} 合并${r.importedAccounts}个账号，${r.needsPassword}个需要重录密码，每日通用窗口${r.selectedWindows}个，单日自定义${r.customDates||0}天，已保存分配${r.assignmentDays||0}天。`),make('p','','导入前配置的恢复备份：'),make('p','export-path',r.previousBackup));result.hidden=false;await refresh();toast('配置已导入，调度保持暂停');}
+  try{await window.cellStationFlush();const r=await api('backup/restore',{token:restoreToken});clearRestore();const result=$('#restore-result');result.replaceChildren(make('strong','','配置导入成功'),make('p','',`${r.message} 合并${r.importedAccounts}个账号，${r.needsPassword}个需要重录密码，每日通用窗口${r.selectedWindows}个，单日自定义${r.customDates||0}天，已保存分配${r.assignmentDays||0}天。`),make('p','','导入前配置的恢复备份：'),make('p','export-path',r.previousBackup));result.hidden=false;await refresh();toast('配置已导入，请查看自动恢复状态');}
   catch(e){clearRestore();$('#restore-result').hidden=false;$('#restore-result').textContent='导入未完成：'+e.message+'。请重新选择文件预览。';toast(e.message,true);}finally{button.disabled=false;}
 });
 for(const [id,route] of [['open-exports','exports/open']])$('#'+id).addEventListener('click',async()=>{try{await api(route,{});}catch(e){toast(e.message,true);}});

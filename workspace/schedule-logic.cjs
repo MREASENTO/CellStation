@@ -11,6 +11,10 @@ const shanghaiDate = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 10)
 const addDays = (date, days) => new Date(Date.parse(date + 'T00:00:00+08:00') + days * DAY + 8 * 3600000).toISOString().slice(0, 10);
 const clock = minutes => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 const minuteOf = text => { const [h, m] = text.split(':').map(Number); return h * 60 + m; };
+function validateAutoActivationPolicy(value){
+  if(!value||typeof value.enabled!=='boolean'||!Number.isSafeInteger(value.pauseSeconds)||value.pauseSeconds<1||!Number.isSafeInteger(value.pauseSeconds*1000)||!Number.isFinite(new Date(Date.now()+value.pauseSeconds*1000).getTime())||Object.keys(value).some(k=>!['enabled','pauseSeconds'].includes(k)))throw new Error('自动开始开关或暂停等待秒数无效');
+  return{enabled:value.enabled,pauseSeconds:value.pauseSeconds};
+}
 function validateRetryPolicy(policy) {
   if (!policy || typeof policy !== 'object' || Array.isArray(policy) || Object.keys(policy).some(key => !['taskRetries', 'captchaRetries'].includes(key)) || !['taskRetries', 'captchaRetries'].every(key => Number.isInteger(policy[key]) && policy[key] >= 0 && policy[key] <= 20)) throw new Error('重试次数需为0至20的整数');
   return { taskRetries: policy.taskRetries, captchaRetries: policy.captchaRetries };
@@ -100,7 +104,7 @@ function generateJobs(config, accounts, releaseDate, days = 1, includeDisabled =
   return [...unique.values()].sort((a, b) => a.releaseAt - b.releaseAt || a.equipmentOrder - b.equipmentOrder);
 }
 function defaults() {
-  return { enabled: false, enabledAt: null, catchUpEnabled:true, reviewRebookEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
+  return { enabled: false, enabledAt: null, autoActivateByPlan:false, autoActivationPauseSeconds:1800, catchUpEnabled:true, reviewRebookEnabled:true, personalAccountId:null, prewarmSeconds: 90, graceSeconds: 60, shuffleDaily: true, dateWindows: {}, exclusions: [], reviewPolicy:{retryIntervalMinutes:5}, retryPolicy: { taskRetries: 2, captchaRetries: 2 },
     equipment: require('./equipment.cjs').defaultEquipment(), theme: 'system', windows: WINDOWS.map(w => ({ id: w.id, enabled: true })) };
 }
 function shuffleAssignments(config, accounts, locked = {}, randomInt = require('node:crypto').randomInt) {
@@ -115,4 +119,4 @@ function shuffleAssignments(config, accounts, locked = {}, randomInt = require('
   for (const window of enabled.filter(w => !mapping[w.id])) mapping[window.id] = candidates.shift() || null;
   return mapping;
 }
-module.exports = { assignmentWindows, WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy, validateReviewPolicy };
+module.exports = { validateAutoActivationPolicy, assignmentWindows, WINDOWS, windowsFor, validateDateWindows, shanghaiDate, addDays, generateJobs, validateWindows, validateSelection, validateSchedules, defaults, shuffleAssignments, validDate, validateExclusions, validateRetryPolicy, validateReviewPolicy };

@@ -191,8 +191,7 @@ class Scheduler {
         if(this.clock()>this.deadline(job)&&!saveAttempted(this.store.data.jobs[job.id])&&this.clock()<Date.parse(`${job.date}T${job.start}:00+08:00`))this.store.job(job,{recovery:{state:'running',attempts:1,phase:'late-preparation'},message:'页面已恢复，核对原计划后预约原时段'});
         this.prepared.set(job.id, true);
         if (this.timer && !this.releaseTimers.has(job.id)) {
-          const timer = setTimeout(() => { this.releaseTimers.delete(job.id); this.tick().catch(() => {}); }, Math.max(0, job.releaseAt - this.clock()));
-          timer.unref?.(); this.releaseTimers.set(job.id, timer);
+          const arm=()=>{const timer=setTimeout(()=>{this.releaseTimers.delete(job.id);if(!this.store.data.config.enabled||!this.prepared.has(job.id))return;if(this.clock()<job.releaseAt){arm();return;}this.tick().catch(()=>{});},Math.min(30000,Math.max(1,Math.ceil(job.releaseAt-this.clock()))));timer.unref?.();this.releaseTimers.set(job.id,timer);};arm();
         }
         job.onStep?.('ready', '已就绪，等待开放');
         this.store.job(job, { status: 'ready', message: '已登录并预选目标时间，等待开放后打开表单、核对并提交' });

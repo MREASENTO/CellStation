@@ -10,6 +10,10 @@ class ManagerStore {
     this.vault = vault;
     this.data = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : { version: 1, accounts: [], config: defaults(), jobs: {}, events: [] };
     if (this.data.version !== 1) throw new Error('管理数据版本不兼容');
+    const auto=require('./schedule-logic.cjs').validateAutoActivationPolicy({enabled:this.data.config.autoActivateByPlan??false,pauseSeconds:this.data.config.autoActivationPauseSeconds??1800});
+    this.data.config.autoActivateByPlan=auto.enabled;this.data.config.autoActivationPauseSeconds=auto.pauseSeconds;
+    if(this.data.autoActivationPause&&(!Number.isFinite(this.data.autoActivationPause.pausedAt)||!Number.isFinite(this.data.autoActivationPause.resumeAt)||this.data.autoActivationPause.resumeAt<this.data.autoActivationPause.pausedAt))throw new Error('自动恢复时间记录无效');
+    if(!auto.enabled)this.data.autoActivationPause=null;
     this.data.bindings ||= {};
     this.data.dailyAssignments ||= {};
     this.data.config.shuffleDaily = true;
@@ -197,10 +201,22 @@ class ManagerStore {
     if (!['light', 'dark', 'system'].includes(theme)) throw new Error('主题设置无效');
     this.data.config.theme = theme; this.persist();
   }
+  setAutoActivationPolicy(input){
+    const policy=require('./schedule-logic.cjs').validateAutoActivationPolicy(input),was=this.data.config.autoActivateByPlan;
+    this.data.config.autoActivateByPlan=policy.enabled;this.data.config.autoActivationPauseSeconds=policy.pauseSeconds;
+    if(!policy.enabled||!was)this.data.autoActivationPause=null;
+    else if(this.data.autoActivationPause)this.data.autoActivationPause.resumeAt=this.data.autoActivationPause.pausedAt+policy.pauseSeconds*1000;
+    this.event('config',`按计划自动开始${policy.enabled?'已开启':'已关闭'}；手动暂停后等待${policy.pauseSeconds}秒恢复`);return policy;
+  }
+  pauseAutomatically(now=Date.now()){
+    this.data.autoActivationPause=this.data.config.autoActivateByPlan?{pausedAt:now,resumeAt:now+this.data.config.autoActivationPauseSeconds*1000}:null;
+    this.persist();return this.data.autoActivationPause;
+  }
   setEnabled(enabled, now = Date.now()) {
     if (enabled) {
       validateSchedules(this.data.config, this.data.accounts, now);
     }
+    if(enabled&&this.data.autoActivationPause){this.data.autoActivationPause=null;this.persist();}
     if (this.data.config.enabled === enabled) return;
     this.data.config.enabled = enabled;
     this.data.config.enabledAt = enabled ? now : null;
