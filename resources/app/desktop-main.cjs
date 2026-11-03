@@ -38,7 +38,7 @@ async function quit() {
     try { await mainWindow.webContents.executeJavaScript('window.cellStationFlush?.()'); } catch (error) { exitStarted = false; show(); dialog.showErrorBox('更改尚未保存', error.message); return; }
   }
   if (manager) {
-    manager.cancelPendingStart();
+    manager.suspendAutomaticStart();manager.cancelPendingStart();
     desktop.schedulerIntent(manager.store.data.config.enabled);
     manager.store.setEnabled(false);
     await manager.scheduler.pausePrepared();
@@ -87,7 +87,7 @@ else {
     tray.setToolTip('CellStation · 实验预约');
     const refreshTrayMenu = () => tray.setContextMenu(Menu.buildFromTemplate([
       { label: '打开预约管理', click: show },
-      { label: '暂停定时预约', click: async () => { manager.cancelPendingStart(); manager.store.setEnabled(false); desktop.schedulerIntent(false); await manager.scheduler.pausePrepared(); } },
+      { label: '暂停定时预约', click: async () => { await manager.pauseScheduling(); } },
       { label: '开机自启动', type: 'checkbox', checked: desktop.status().autoStart, click: item => { try { desktop.update({ autoStart: item.checked }); } catch (error) { item.checked = desktop.status().autoStart; dialog.showErrorBox('启动项设置失败', error.message); } } },
       { label: '发送测试提醒', click: () => desktop.testNotification() },
       { type: 'separator' },
@@ -100,7 +100,7 @@ else {
     tray.on('balloon-show', () => { manager.store.event('notification', 'Windows已显示系统提醒'); });
     desktop.replayUncertain(Object.values(manager.store.data.jobs));
     powerMonitor.on('suspend', () => manager.operations.suspend());
-    powerMonitor.on('resume', () => { manager.operations.resume(); manager.scheduler.tick().catch(() => {}); });
+    powerMonitor.on('resume', () => { manager.operations.resume(); manager.autoActivation.tick().catch(()=>{});manager.scheduler.tick().catch(() => {}); });
     manager.operations.networkStatus(net.isOnline());
     networkTimer = setInterval(() => manager.operations.networkStatus(net.isOnline()), 30000);
     startupProgress({message:'正在加载预约管理界面…',percent:95});
@@ -108,13 +108,12 @@ else {
     updates.markHealthy();
     startupWindow.destroy(); startupWindow=null;
     if (!autoStarted) mainWindow.show();
-    if (updates.consumeResume() || desktop.shouldResume(autoStarted)) {
-      const revision = manager.controlRevision();
-      manager.setStartupPending(true);
-      try { await manager.operations.ensureCheck(); if (!exitStarted && revision === manager.controlRevision()) { manager.store.setEnabled(true); await manager.scheduler.tick(); } }
-      catch { tray.displayBalloon({ title: 'CellStation · 调度未恢复', content: '请打开管理窗口检查账号和时段配置，预约仍保持暂停。', iconType: 'warning', respectQuietTime: true }); }
-      finally { manager.setStartupPending(false); }
+    const resumeAfterUpdate=updates.consumeResume();
+    if(process.env.CELLSTATION_DISABLE_AUTO_ACTIVATION!=='1'&&(resumeAfterUpdate||desktop.shouldResume(autoStarted))){
+      try{await manager.startScheduling({source:'startup',guard:()=>resumeAfterUpdate||desktop.shouldResume(autoStarted)});}
+      catch(error){if(error.code!=='START_CANCELLED')tray.displayBalloon({title:'CellStation · 预约未自动开始',content:'请打开管理窗口检查账号、设备和时段配置，预约保持暂停。',iconType:'warning',respectQuietTime:true});}
     }
+    manager.allowAutomaticStart();
   }).catch(error => { console.error('DESKTOP_START_ERROR', error.message); dialog.showErrorBox('CellStation启动失败', error.message); quitting = true; app.exit(1); });
 }
 

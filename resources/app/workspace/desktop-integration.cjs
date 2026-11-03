@@ -19,7 +19,8 @@ class DesktopIntegration {
     this.openExternal = openExternal; this.chooseBackupPath = chooseBackupPath; this.revealBackup = revealBackup;
     this.startupName = startupName; this.clock = clock; this.batchMs = batchMs;
     this.file = path.join(dataRoot, 'desktop-settings.json');
-    this.settings = { theme: 'system', failureNotifications: true, resumeSchedule: true, lastSchedulerEnabled: false, notifiedJobs: {}, ...(fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {}) };
+    this.settings = { theme: 'system', failureNotifications: true, resumeSchedule: true, startBookingOnLaunch:false, lastSchedulerEnabled: false, notifiedJobs: {}, ...(fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {}) };
+    if(typeof this.settings.startBookingOnLaunch!=='boolean')throw new Error('程序启动后自动预约设置无效');
     this.pending = []; this.timer = null;
     this.persist();
   }
@@ -35,10 +36,10 @@ class DesktopIntegration {
     const item = login.launchItems?.find(item => item.name === this.startupName);
     const registered = Boolean(item) || Boolean(login.openAtLogin);
     const approved = item ? item.enabled : login.executableWillLaunchAtLogin !== false;
-    return { theme: this.settings.theme, autoStart: registered && approved, startupRegistered: registered, startupBlocked: registered && !approved, failureNotifications: this.settings.failureNotifications, resumeSchedule: this.settings.resumeSchedule, lastSchedulerEnabled: this.settings.lastSchedulerEnabled };
+    return { theme: this.settings.theme, autoStart: registered && approved, startupRegistered: registered, startupBlocked: registered && !approved, failureNotifications: this.settings.failureNotifications, resumeSchedule: this.settings.resumeSchedule,startBookingOnLaunch:this.settings.startBookingOnLaunch===true, lastSchedulerEnabled: this.settings.lastSchedulerEnabled };
   }
   update(input) {
-    const allowed = new Set(['autoStart', 'failureNotifications', 'resumeSchedule', 'theme']);
+    const allowed = new Set(['autoStart', 'failureNotifications', 'resumeSchedule', 'startBookingOnLaunch', 'theme']);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.has(key) || (key === 'theme' ? !['light', 'dark', 'system'].includes(input[key]) : typeof input[key] !== 'boolean'))) throw new Error('桌面设置无效');
     if ('autoStart' in input) {
       this.app.setLoginItemSettings({ ...this.loginOptions(), name: this.startupName, openAtLogin: input.autoStart, enabled: input.autoStart });
@@ -46,7 +47,7 @@ class DesktopIntegration {
       if (input.autoStart && !actual.autoStart) throw new Error('Windows未启用启动项，请检查任务管理器的启动应用');
       if (!input.autoStart && actual.autoStart) throw new Error('Windows启动项未关闭，请检查任务管理器的启动应用');
     }
-    for (const key of ['failureNotifications', 'resumeSchedule', 'theme']) if (key in input) this.settings[key] = input[key];
+    for (const key of ['failureNotifications', 'resumeSchedule', 'startBookingOnLaunch', 'theme']) if (key in input) this.settings[key] = input[key];
     if (!this.settings.failureNotifications) { clearTimeout(this.timer); this.timer = null; this.pending = []; }
     this.persist();
     const status = this.status();
@@ -54,7 +55,7 @@ class DesktopIntegration {
     return status;
   }
   schedulerIntent(enabled) { this.settings.lastSchedulerEnabled = Boolean(enabled); this.persist(); }
-  shouldResume(autoStarted) { return Boolean(autoStarted && this.settings.resumeSchedule && this.settings.lastSchedulerEnabled); }
+  shouldResume(autoStarted) { return Boolean(this.settings.startBookingOnLaunch||autoStarted && this.settings.resumeSchedule && this.settings.lastSchedulerEnabled); }
   notify(job) {
     if (!FAILURE.has(job.status)) return;
     const notice=reviewNotice(job);if(!notice)return;
