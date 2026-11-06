@@ -1,7 +1,7 @@
 {
   "name": "cellstation-desktop",
   "productName": "CellStation",
-  "version": "1.0.12",
+  "version": "2.0.0",
   "main": "desktop-main.cjs",
   "description": "Local desktop cell station reservation manager",
   "author": "CellStation"
