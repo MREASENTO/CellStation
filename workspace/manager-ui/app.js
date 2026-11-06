@@ -108,7 +108,7 @@ function renderSettings() {
   $('#restore-file').disabled=importingBlocked; $('#restore-file').parentElement.classList.toggle('disabled', importingBlocked);
   $('#backup-import-hint').textContent=importingBlocked?'当前正在运行或检测，请先暂停并等待任务结束后导入。':'按登录账号合并；本机其他账号、执行记录和截图保留。';
   for (const [id,key] of [['setting-autostart','autoStart'],['setting-start-booking','startBookingOnLaunch'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']]) {
-    $('#'+id).disabled=!d; if(!dirty.has('desktop-'+key)) $('#'+id).checked=d?.[key] || false;
+    $('#'+id).disabled=!d; if(!dirty.has('desktop-'+key)) $('#'+id).checked=(key==='autoStart'?(d?.autoStartEnabled??d?.autoStart):d?.[key]) || false;
   }
   if(!dirty.has('theme')) $('#setting-theme').value=state.config.theme || 'system'; theme();
   if(!dirty.has('retention')){const policy=state.config.retentionPolicy;$('#setting-retention-enabled').checked=policy.enabled;$('#setting-compress-days').value=policy.compressAfterDays;$('#setting-delete-days').value=policy.deleteAfterDays;}
@@ -117,7 +117,9 @@ function renderSettings() {
   if(!dirty.has('review-policy'))$('#setting-review-interval').value=state.config.reviewPolicy.retryIntervalSeconds??state.config.reviewPolicy.retryIntervalMinutes*60;
   if(!dirty.has('review-rebook'))$('#setting-review-rebook').checked=state.config.reviewRebookEnabled!==false;
   if(!dirty.has('retry')) { $('#setting-task-retries').value=state.config.retryPolicy.taskRetries; $('#setting-captcha-retries').value=state.config.retryPolicy.captchaRetries; }
-  $('#startup-status').textContent=d?.startupBlocked?'启动项已被Windows禁用':d?.autoStart?'已启用 · 当前Windows用户':'已关闭';
+  $('#startup-status').textContent=d?.startupMessage || (d?.autoStart?'已启用 · 当前Windows用户':'已关闭');
+  $('#startup-status').title=d?.startupExecutable||'';
+  $('#repair-startup').disabled=!d;
   $('#retry-policy-note').textContent='修改后自动保存；当前任务沿用开始时的次数，后续任务使用新设置。0表示关闭短间隔重试；网站恢复重试另按5分钟执行。';
   $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时立即复核；${state.config.reviewRebookEnabled!==false?'未确认先核对空闲并额外补约一次，再即时复核；仍未确认':'未确认'}则等待${state.config.reviewPolicy.retryIntervalSeconds??state.config.reviewPolicy.retryIntervalMinutes*60}秒后最终复核。最终未确认会明确提醒你自主复核。`;
 }
@@ -393,6 +395,7 @@ $('#cancel-start').addEventListener('click',()=>control(false).catch(e=>toast(e.
 async function previewPlan(){const date=$('#plan-date').value,request=++previewRequest;try{const result=await api('simulate',{date});if(request!==previewRequest||date!==$('#plan-date').value)return;preview=result;renderPlan();}catch(e){if(request===previewRequest)toast(e.message,true);}}
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
 for(const [id,key] of [['setting-autostart','autoStart'],['setting-start-booking','startBookingOnLaunch'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
+$('#repair-startup').addEventListener('click',()=>autosave('desktop-autoStart',()=>api('desktop/settings',{autoStart:true},'PUT'),0));
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
 $('#setting-catch-up').addEventListener('change',()=>{const enabled=$('#setting-catch-up').checked;autosave('catch-up',()=>api('catch-up',{enabled},'PUT'),0);});
 $('#setting-review-rebook').addEventListener('change',()=>{const enabled=$('#setting-review-rebook').checked;autosave('review-rebook',()=>api('review-rebook',{enabled},'PUT'),0);});

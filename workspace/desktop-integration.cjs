@@ -13,15 +13,17 @@ function reason(job) {
   return '预约执行未完成，请查看执行记录。';
 }
 class DesktopIntegration {
-  constructor({ app, dataRoot, sendNotification, show, quit, openDirectory, openExternal, chooseBackupPath, revealBackup, startupName = 'CellStation', clock = Date.now, batchMs = 1200 }) {
+  constructor({ app, dataRoot, sendNotification, show, quit, openDirectory, openExternal, chooseBackupPath, revealBackup, startupName = 'CellStation', executablePath = process.execPath, clock = Date.now, batchMs = 1200 }) {
     this.app = app; this.sendNotification = sendNotification; this.show = show; this.quit = quit;
     this.dataRoot = dataRoot; this.openDirectory = openDirectory;
     this.openExternal = openExternal; this.chooseBackupPath = chooseBackupPath; this.revealBackup = revealBackup;
-    this.startupName = startupName; this.clock = clock; this.batchMs = batchMs;
+    this.startupName = startupName; this.executablePath = executablePath; this.clock = clock; this.batchMs = batchMs;
+    this.startupError = ''; this.startupRepaired = false;
     this.file = path.join(dataRoot, 'desktop-settings.json');
     this.settings = { theme: 'system', failureNotifications: true, resumeSchedule: true, startBookingOnLaunch:false, lastSchedulerEnabled: false, notifiedJobs: {}, ...(fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {}) };
     if(typeof this.settings.startBookingOnLaunch!=='boolean')throw new Error('程序启动后自动预约设置无效');
     this.pending = []; this.timer = null;
+    this.reconcileStartup();
     this.persist();
   }
   persist() {
@@ -30,22 +32,53 @@ class DesktopIntegration {
     fs.writeFileSync(temporary, JSON.stringify(this.settings, null, 2));
     fs.renameSync(temporary, this.file);
   }
-  loginOptions() { return { path: process.execPath, args: ['--autostart'] }; }
+  loginOptions(executable = this.executablePath) { return { path: executable, args: ['--autostart'] }; }
+  readStartup(executable = this.executablePath) {
+    const login = this.app.getLoginItemSettings(this.loginOptions(executable));
+    const item = login.launchItems?.find(item => item.name === this.startupName && (!item.scope || item.scope === 'user'));
+    // openAtLogin checks the complete command; launchItems alone ignores arguments.
+    const registered = Boolean(item) || (!Array.isArray(login.launchItems) && Boolean(login.openAtLogin));
+    const approved = item ? item.enabled === true : login.executableWillLaunchAtLogin !== false;
+    return { registered, blocked: registered && !approved, exact: registered && login.openAtLogin === true };
+  }
+  reconcileStartup() {
+    try {
+      const current = this.readStartup();
+      const oldPath = this.settings.startupExecutable;
+      const previous = typeof oldPath === 'string' && oldPath !== this.executablePath ? this.readStartup(oldPath) : null;
+      if (typeof this.settings.autoStartEnabled !== 'boolean') this.settings.autoStartEnabled = current.registered || Boolean(previous?.registered);
+      if (this.settings.autoStartEnabled && !current.blocked && !previous?.blocked && !current.exact) {
+        this.writeStartup(true); this.startupRepaired = true;
+      }
+      if (current.registered || this.startupRepaired) this.settings.startupExecutable = this.executablePath;
+    } catch (error) { this.startupError = error.message; }
+  }
+  writeStartup(enabled) {
+    this.app.setLoginItemSettings({ ...this.loginOptions(), name: this.startupName, openAtLogin: enabled, enabled });
+    const actual = this.readStartup();
+    if (enabled && (!actual.exact || actual.blocked)) throw new Error('Windows启动项未通过校验，请点击“重新注册启动项”或检查任务管理器的启动应用');
+    if (!enabled && actual.registered) throw new Error('Windows启动项未关闭，请检查任务管理器的启动应用');
+    this.settings.startupExecutable = this.executablePath;
+  }
   status() {
-    const login = this.app.getLoginItemSettings(this.loginOptions());
-    const item = login.launchItems?.find(item => item.name === this.startupName);
-    const registered = Boolean(item) || Boolean(login.openAtLogin);
-    const approved = item ? item.enabled : login.executableWillLaunchAtLogin !== false;
-    return { theme: this.settings.theme, autoStart: registered && approved, startupRegistered: registered, startupBlocked: registered && !approved, failureNotifications: this.settings.failureNotifications, resumeSchedule: this.settings.resumeSchedule,startBookingOnLaunch:this.settings.startBookingOnLaunch===true, lastSchedulerEnabled: this.settings.lastSchedulerEnabled };
+    let current;
+    try { current = this.readStartup(); } catch (error) { current = { registered: false, blocked: false, exact: false }; this.startupError = error.message; }
+    const requested = this.settings.autoStartEnabled === true;
+    if (requested && !current.registered && this.settings.startupExecutable && this.settings.startupExecutable !== this.executablePath) {
+      try { if (this.readStartup(this.settings.startupExecutable).blocked) current.blocked = true; } catch (error) { this.startupError = error.message; }
+    }
+    const state = this.startupError ? 'error' : current.blocked ? 'blocked' : current.exact ? 'enabled' : current.registered ? 'mismatch' : requested ? 'missing' : 'off';
+    const messages = { error: '启动项检查失败，请重新注册启动项', blocked: 'Windows已禁用启动项，点击重新注册可启用', enabled: '已验证 · 登录当前Windows用户后在托盘后台启动', mismatch: '启动参数不匹配，请重新注册启动项', missing: '已开启，但Windows启动项缺失，请重新注册', off: '已关闭' };
+    return { theme: this.settings.theme, autoStart: current.exact && !current.blocked, autoStartEnabled: requested, startupState: state, startupMessage: messages[state], startupExecutable: this.executablePath, startupRepaired: this.startupRepaired, startupRegistered: current.registered, startupBlocked: current.blocked, failureNotifications: this.settings.failureNotifications, resumeSchedule: this.settings.resumeSchedule,startBookingOnLaunch:this.settings.startBookingOnLaunch===true, lastSchedulerEnabled: this.settings.lastSchedulerEnabled };
   }
   update(input) {
     const allowed = new Set(['autoStart', 'failureNotifications', 'resumeSchedule', 'startBookingOnLaunch', 'theme']);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.has(key) || (key === 'theme' ? !['light', 'dark', 'system'].includes(input[key]) : typeof input[key] !== 'boolean'))) throw new Error('桌面设置无效');
     if ('autoStart' in input) {
-      this.app.setLoginItemSettings({ ...this.loginOptions(), name: this.startupName, openAtLogin: input.autoStart, enabled: input.autoStart });
-      const actual = this.status();
-      if (input.autoStart && !actual.autoStart) throw new Error('Windows未启用启动项，请检查任务管理器的启动应用');
-      if (!input.autoStart && actual.autoStart) throw new Error('Windows启动项未关闭，请检查任务管理器的启动应用');
+      this.settings.autoStartEnabled = input.autoStart;
+      this.persist();
+      try { this.writeStartup(input.autoStart); this.startupError = ''; }
+      catch (error) { this.startupError = error.message; throw error; }
     }
     for (const key of ['failureNotifications', 'resumeSchedule', 'startBookingOnLaunch', 'theme']) if (key in input) this.settings[key] = input[key];
     if (!this.settings.failureNotifications) { clearTimeout(this.timer); this.timer = null; this.pending = []; }

@@ -30,7 +30,8 @@ let desktop;
 let balloonClick;
 let networkTimer;
 const autoStarted = process.argv.includes('--autostart');
-app.setAppUserModelId('CellStation');
+const startupName = process.env.CELLSTATION_STARTUP_NAME || 'CellStation';
+app.setAppUserModelId(startupName);
 async function quit() {
   if (exitStarted) return;
   exitStarted = true;
@@ -58,6 +59,7 @@ else {
   app.on('before-quit', event => { if (!quitting) { event.preventDefault(); quit().catch(() => app.exit(1)); } });
   app.on('window-all-closed', () => {});
   app.whenReady().then(async () => {
+    console.log('DESKTOP_START', JSON.stringify({version:app.getVersion(),autoStarted,executable:process.execPath,dataRoot}));
     Menu.setApplicationMenu(null);
     startupWindow = new BrowserWindow({ width: 520, height: 355, resizable: false, title: 'CellStation 启动检查', show: !autoStarted, backgroundColor: '#f6f8f3', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
     await startupWindow.loadFile(path.join(__dirname, 'workspace/startup.html'));
@@ -66,11 +68,12 @@ else {
     desktop = new DesktopIntegration({ app, dataRoot, show, chooseBackupPath: async defaultPath => {
       const result = await dialog.showSaveDialog(mainWindow, { title: '导出 CellStation 配置备份', defaultPath, filters: [{ name: 'CellStation 配置备份（含加密密码）', extensions: ['json'] }] });
       return result.canceled ? null : result.filePath;
-    }, revealBackup: file => shell.showItemInFolder(file), openDirectory: directory => shell.openPath(directory), openExternal: url => shell.openExternal(url), quit: () => { quit().catch(() => app.exit(1)); }, startupName: process.env.CELLSTATION_STARTUP_NAME || 'CellStation', sendNotification: message => {
+    }, revealBackup: file => shell.showItemInFolder(file), openDirectory: directory => shell.openPath(directory), openExternal: url => shell.openExternal(url), quit: () => { quit().catch(() => app.exit(1)); }, startupName, sendNotification: message => {
       if (!tray || tray.isDestroyed()) throw new Error('系统托盘未就绪');
       balloonClick = message.click;
       tray.displayBalloon({ title: message.title, content: message.content, iconType: 'warning', noSound: false, respectQuietTime: true });
     } });
+    console.log('DESKTOP_STARTUP_STATUS', JSON.stringify(desktop.status()));
     manager = await require('./workspace/manager-server.cjs').createManager({ port: 0, desktop: true, pauseOnStart: true, desktopIntegration: desktop, updater: updates, onStartupProgress: check => { const finished=check.items.filter(i=>i.status!=='running').length;startupProgress({message:check.items.at(-1)?.title||'本地检查',percent:Math.round(10+finished/3*50),detail:check.items.at(-1)?.detail}); }, onJob: job => desktop.notify(job), onControl: enabled => desktop.schedulerIntent(enabled) });
     // Required checks complete before the main management window exists.
     await manager.operations.checkLocal();
@@ -88,7 +91,7 @@ else {
     const refreshTrayMenu = () => tray.setContextMenu(Menu.buildFromTemplate([
       { label: '打开预约管理', click: show },
       { label: '暂停定时预约', click: async () => { await manager.pauseScheduling(); } },
-      { label: '开机自启动', type: 'checkbox', checked: desktop.status().autoStart, click: item => { try { desktop.update({ autoStart: item.checked }); } catch (error) { item.checked = desktop.status().autoStart; dialog.showErrorBox('启动项设置失败', error.message); } } },
+      { label: '开机自启动', type: 'checkbox', checked: desktop.status().autoStartEnabled, click: item => { try { desktop.update({ autoStart: item.checked }); } catch (error) { item.checked = desktop.status().autoStartEnabled; dialog.showErrorBox('启动项设置失败', error.message); } } },
       { label: '发送测试提醒', click: () => desktop.testNotification() },
       { type: 'separator' },
       { label: '退出程序并停止任务', click: () => { quit().catch(() => app.exit(1)); } },
@@ -114,6 +117,7 @@ else {
       catch(error){if(error.code!=='START_CANCELLED')tray.displayBalloon({title:'CellStation · 预约未自动开始',content:'请打开管理窗口检查账号、设备和时段配置，预约保持暂停。',iconType:'warning',respectQuietTime:true});}
     }
     manager.allowAutomaticStart();
+    console.log('DESKTOP_READY', JSON.stringify({autoStarted,schedulingEnabled:manager.store.data.config.enabled,autoActivation:manager.autoActivation.publicState().status}));
   }).catch(error => { console.error('DESKTOP_START_ERROR', error.message); dialog.showErrorBox('CellStation启动失败', error.message); quitting = true; app.exit(1); });
 }
 
