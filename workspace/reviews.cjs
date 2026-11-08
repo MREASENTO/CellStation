@@ -18,10 +18,11 @@ function reviewPlan(job) {
   return { start, end, dayStart, weekStart: dayStart - weekday * 86400 };
 }
 class Reviews {
-  constructor(store, root, { clock = Date.now, canRun = () => true, launch, login = automaticLogin, open = openEquipment, week = ensureWeek, components = calendarComponents, bookingApi = require('./reservation.cjs'), pause = ms=>new Promise(resolve=>setTimeout(resolve,ms)) } = {}) {
-    Object.assign(this, { store, root, clock, canRun, login, open, week, components, bookingApi, pause });
+  constructor(store, root, { clock = Date.now, canRun = () => true, controlVersion = () => 0, launch, login = automaticLogin, open = openEquipment, week = ensureWeek, components = calendarComponents, bookingApi = require('./reservation.cjs'), pause = ms=>new Promise(resolve=>setTimeout(resolve,ms)) } = {}) {
+    Object.assign(this, { store, root, clock, canRun, controlVersion, login, open, week, components, bookingApi, pause });
     this.launch = launch || (options => require('playwright').chromium.launch(options));
     this.sessions = new Map(); this.pending = new Map(); this.pendingPersonal = new Map(); this.closed = false;
+    this.manualRequests = new Map();require('./manual-rebooking.cjs').recoverManual(this);
     for(const job of Object.values(store.data.jobs)) {
       if(job.status!=='needs_review')continue;
       if(job.review?.protocol>=2&&['checking','rebooking'].includes(job.review.state)){const rebooking=job.review.rebooking;if(rebooking&&['checking','saving'].includes(rebooking.state))rebooking.state='interrupted';store.job(job,{review:{...job.review,...(rebooking?{rebooking}:{}),state:'waiting',nextAt:clock(),message:'上次复核中断，继续未完成的查询；已消耗的补约机会不会重置。'}});}
@@ -30,7 +31,9 @@ class Reviews {
     this.reschedule();
   }
   get active() { return this.sessions.size + this.pending.size; }
-  isAccountBusy(accountId) { return [...this.pendingPersonal.values()].includes(accountId)||[...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
+  rebook(id,requestId) { return require('./manual-rebooking.cjs').rebook(this,id,requestId); }
+  otherAccountBusy(accountId,id) { return [...this.pendingPersonal].some(([key,value])=>key!==id&&value===accountId)||[...this.pending.keys()].some(key=>key!==id&&(this.store.data.jobs[key]?.accountId===accountId||this.store.data.jobs[key]?.manualRebooking?.accountId===accountId))||[...this.sessions].some(([key,e])=>key!==id&&e.accountId===accountId); }
+  isAccountBusy(accountId) { return [...this.pendingPersonal.values()].includes(accountId)||[...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId||this.store.data.jobs[id]?.manualRebooking?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
   target(id) {
     const job = this.store.data.jobs[id];
     if (!job || !['needs_review','failed','missed','already_exists','success'].includes(job.status)) throw new Error('该记录当前不需要核对');
@@ -82,6 +85,7 @@ class Reviews {
     if(stage==='immediate')review.firstCheckedAt=checkedAt;if(stage==='post_rebook')review.postRebookCheckedAt=checkedAt;if(stage==='delayed')review.delayedCheckedAt=checkedAt;
     if(waiting&&!rebookNext)Object.assign(review,{scheduledFrom:checkedAt,intervalSeconds:this.intervalMs()/1000,intervalMinutes:this.intervalMs()/60000});
     let patch={review};if(match){patch={...patch,status:base.rebooking?.outcome==='created'?'success':'already_exists',reservationId:match.id,recheckedAt:checkedAt,message};if(base.rebooking?.outcome==='created')Object.assign(patch,{confirmedAt:checkedAt,verifiedAt:new Date(checkedAt).toISOString(),confirmationDelayMs:checkedAt-job.releaseAt,submissionToConfirmationMs:checkedAt-base.rebooking.submittedAt});}
+    if(match&&job.manualRebooking?.requestId===base.rebooking?.attemptId)patch.manualRebooking={...job.manualRebooking,state:'already_exists',confirmedAt:checkedAt,finishedAt:checkedAt,reservationId:match.id,message};
     this.store.job(job,patch);return {verified:Boolean(match),manualRequired,message};
   }
   run(id, action) {
@@ -162,7 +166,7 @@ class Reviews {
       const current=this.store.data.jobs[id];if(current)this.observe(current);const target=this.target(id),job=target.job;
       if(['success','already_exists'].includes(job.status))return{verified:true,message:'该预约已经确认，无需再次核对'};
       const limit=job.review?.protocol===3?3:2;if(automatic&&(job.review?.autoAttempts||0)>=limit)return{verified:false,manualRequired:true,message:'自动复核已结束，请自主复核。'};
-    if(!this.canRun(job))throw new Error('该账号正在准备或执行预约，请稍后核对');if(this.sessions.has(id))throw new Error('该记录的核对网页已打开，请关闭后再由程序核对');
+    if(!this.canRun(job)||this.otherAccountBusy(target.account.id,id))throw new Error('该账号正在准备或执行预约，请稍后核对');if(this.sessions.has(id))throw new Error('该记录的核对网页已打开，请关闭后再由程序核对');
       const stage=job.status==='needs_review'&&job.review?.protocol>=2&&job.review.stage!=='finished'?job.review.stage:'manual',startedAt=this.clock();let entry;
       try{
         if(stage==='rebook')return await this.afterFirst(target,entry,automatic);
@@ -180,7 +184,7 @@ class Reviews {
     return this.run(id,async()=>{
       const existing=this.sessions.get(id);
       if(existing?.visible&&!existing.page?.isClosed()){await existing.page.bringToFront();return {opened:true,message:'已切换到原账号核对网页'};}
-      const target=this.target(id);if(!this.canRun(target.job))throw new Error('该账号正在准备或执行预约，请稍后打开');
+      const target=this.target(id);if(!this.canRun(target.job)||this.otherAccountBusy(target.account.id,id))throw new Error('该账号正在准备或执行预约，请稍后打开');
       try {
         const entry=await this.session(target,true);
         await this.week(entry.page,reviewPlan(target.job).start);
@@ -201,7 +205,7 @@ class Reviews {
     const action=this.run(id,async()=>{
       const existing=this.sessions.get(id);if(existing?.visible&&!existing.page?.isClosed()){await existing.page.bringToFront();return {opened:true,ready:true,message:'已打开预约日历'};}
       const date=require('./schedule-logic.cjs').shanghaiDate(this.clock()),job={id,accountId:account.id,date},target={job,account:structuredClone(account),rules:rulesFor(equipment)};
-    if(!this.canRun(job))throw new Error('该账号正在执行预约，请稍后打开');
+    if(!this.canRun(job)||this.otherAccountBusy(account.id,id))throw new Error('该账号正在执行预约，请稍后打开');
       try{const entry=await this.session(target,true);await this.week(entry.page,Date.parse(date+'T00:00:00+08:00')/1000);await entry.page.bringToFront();return {opened:true,ready:true,message:'已登录并打开预约日历'};}
       catch(error){const entry=this.sessions.get(id);if(entry?.page&&!entry.page.isClosed()){await entry.page.bringToFront().catch(()=>{});return {opened:true,ready:false,message:'预约网站已打开，请完成登录或选择设备：'+safeError(error)};}this.sessions.delete(id);await entry?.browser.close().catch(()=>{});throw error;}
     });
