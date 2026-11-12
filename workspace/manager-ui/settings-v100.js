@@ -3,8 +3,9 @@
   let deviceKey;const openDevices=new Set();
   window.cellStationRenderV100 = current => {
     const w=current.wechat;
-    if(w&&!dirty.has('wechat')){for(const [id,key]of [['wechat-enabled','enabled'],['wechat-success','success'],['wechat-failure','failure']])$('#'+id).checked=w[key];$('#wechat-provider').value=w.provider;$('#wechat-key').placeholder=w.hasKey?'密钥已加密保存，留空保留':'粘贴服务网站提供的密钥';}
-    $('#wechat-status').textContent=w?.error|| (w?.hasKey?`密钥已保存 · ${w.enabled?'通知已开启':'通知未开启'}${w.lastSentAt?' · 最近发送 '+fmt(Date.parse(w.lastSentAt),true):''}`:'尚未配置微信推送服务');
+    if(w&&!dirty.has('wechat')){for(const [id,key]of [['wechat-enabled','enabled'],['wechat-success','success'],['wechat-failure','failure']])$('#'+id).checked=w[key];$('#wechat-provider').value=w.provider;$('#wechat-key').placeholder=w.hasKey?'密钥已加密保存，留空保留':w.provider==='wecom'?'粘贴完整的企业微信群机器人Webhook地址':'粘贴服务网站提供的密钥';}
+    notificationFields();
+    $('#wechat-status').textContent=w?.error|| (w?.hasKey?`密钥已保存 · ${w.enabled?'通知已开启':'通知未开启'}${w.queued?' · 待处理 '+w.queued+' 条':''}${w.lastSentAt?' · 最近发送 '+fmt(Date.parse(w.lastSentAt),true):''}`:'尚未配置微信推送服务');
     const u=current.updates;$('#update-auto').disabled=!u;
     if(u){if(!dirty.has('updates')){$('#update-auto').checked=u.auto;$('#update-mirrors').value=u.mirrors.join('\n');}$('#update-status').textContent=u.message;$('#update-progress').value=u.progress||0;$('#update-install').hidden=!u.availableVersion;$('#update-install').disabled=['installing','downloading','checking'].includes(u.status);}
     else $('#update-status').textContent='自动更新暂不可用。';
@@ -40,9 +41,11 @@
     form.addEventListener('focusout',()=>setTimeout(()=>window.cellStationRenderV100(state),0));return details;
   }
   $('#equipment-detect').addEventListener('click',async()=>{const b=$('#equipment-detect'),status=$('#equipment-detection');b.disabled=true;status.textContent='正在后台检测设备名称和预约日历…';try{const r=await api('equipment/detect',{name:$('#equipment-query').value.trim()});status.textContent=r.message+(r.equipment?' · '+r.equipment.equipmentName+' · 编号'+r.equipment.equipmentId:'');status.className=r.recognized?'good':'review';const root=$('#equipment-results');root.replaceChildren();for(const c of r.candidates||[])if(!state.config.equipments.some(e=>e.equipmentId===c.equipmentId))root.append(windowButton(c));}catch(e){status.textContent='检测未完成：'+e.message;status.className='bad';}finally{b.disabled=false;}});
-  function saveWechat(){const key=$('#wechat-key').value.trim(),input={provider:$('#wechat-provider').value,enabled:$('#wechat-enabled').checked,success:$('#wechat-success').checked,failure:$('#wechat-failure').checked,...(key?{key}:{})};autosave('wechat',async()=>{await api('wechat',input,'PUT');$('#wechat-key').value='';},0);}
-  for(const id of ['wechat-provider','wechat-enabled','wechat-success','wechat-failure','wechat-key'])$('#'+id).addEventListener('change',saveWechat);
-  $('#wechat-test').addEventListener('click',async()=>{try{await window.cellStationFlush();toast((await api('wechat/test',{})).message);}catch(e){toast(e.message,true);}});
+  function notificationFields(){const wecom=$('#wechat-provider').value==='wecom';$('#wechat-key-label').textContent=wecom?'企业微信群机器人Webhook地址':'推送密钥';$('#wechat-key').setAttribute('aria-label',wecom?'企业微信群机器人Webhook地址':'推送密钥');$('#wechat-guide-wecom').hidden=!wecom;$('#wechat-guide-other').hidden=wecom;$('#wechat-channel-hint').textContent=wecom?'消息发送到企业微信内部群，普通微信群和外部群不适用。程序自动排队限速；Webhook地址加密保存在本机，不会回显。':'使用所选服务接收消息，免费额度及认证费用以服务网站为准。密钥加密保存在本机。';}
+  function saveWechat(){const key=$('#wechat-key').value.trim(),input={provider:$('#wechat-provider').value,enabled:$('#wechat-enabled').checked,success:$('#wechat-success').checked,failure:$('#wechat-failure').checked,...(key?{key}:{})};autosave('wechat',async()=>{await api('wechat',input,'PUT');if($('#wechat-provider').value===input.provider&&$('#wechat-key').value.trim()===key)$('#wechat-key').value='';},0);}
+  $('#wechat-provider').addEventListener('change',()=>{$('#wechat-key').value='';$('#wechat-key').placeholder=$('#wechat-provider').value==='wecom'?'粘贴完整的企业微信群机器人Webhook地址':'粘贴服务网站提供的密钥';$('#wechat-enabled').checked=false;notificationFields();saveWechat();});
+  for(const id of ['wechat-enabled','wechat-success','wechat-failure','wechat-key'])$('#'+id).addEventListener('change',saveWechat);
+  $('#wechat-test').addEventListener('click',async()=>{const b=$('#wechat-test');b.disabled=true;try{await window.cellStationFlush();toast((await api('wechat/test',{})).message);}catch(e){toast(e.message,true);}finally{b.disabled=false;await refresh();}});
   const saveUpdates=()=>{const input={auto:$('#update-auto').checked,mirrors:$('#update-mirrors').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)};autosave('updates',()=>api('updates/settings',input,'PUT'));};
   $('#update-auto').addEventListener('change',saveUpdates);$('#update-mirrors').addEventListener('change',saveUpdates);
   for(const [id,route]of [['update-check','updates/check'],['update-install','updates/install']])$('#'+id).addEventListener('click',async()=>{try{await window.cellStationFlush();await api(route,{});await refresh();}catch(e){toast(e.message,true);}});

@@ -81,7 +81,7 @@ else {
     await updates.startup();
     nativeTheme.themeSource = manager.store.data.config.theme || 'system';
     mainWindow = new BrowserWindow({ width: 1400, height: 940, minWidth: 940, minHeight: 680, title: 'CellStation · 实验预约', backgroundColor: '#f5f6f1', icon: path.join(__dirname, 'assets', 'icon.ico'), show: false, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => { try { const target=new URL(url);if(target.protocol==='https:'&&['github.com','sct.ftqq.com','www.pushplus.plus'].includes(target.hostname)) shell.openExternal(url); } catch {} return { action: 'deny' }; });
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => { try { const target=new URL(url);if(target.protocol==='https:'&&['github.com','sct.ftqq.com','www.pushplus.plus','cloud.tencent.com'].includes(target.hostname)) shell.openExternal(url); } catch {} return { action: 'deny' }; });
     mainWindow.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== manager.url) event.preventDefault(); });
     mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); mainWindow.hide(); } });
     mainWindow.on('minimize', event => { if (!quitting) { event.preventDefault(); mainWindow.hide(); } });
