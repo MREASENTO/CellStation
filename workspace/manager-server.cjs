@@ -85,7 +85,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), autoActivation:autoActivation?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '2.0.4' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), autoActivation:autoActivation?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, rebookingBatch:reviews.batchState?.()||null, rebookingCounts:reviews.batchCounts?.()||{}, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '2.0.5' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -122,6 +122,11 @@ async function createManager(options = {}) {
         if (req.method === 'PUT' && url.pathname === '/api/retry-policy') {
           store.setRetryPolicy(await body(req)); return send(200, { retryPolicy: store.data.config.retryPolicy });
         }
+        if(req.method==='POST'&&url.pathname==='/api/reviews/batch/start'){
+          const input=await body(req);if(shuttingDown||pendingStart)throw new Error('程序正在启动或退出，请稍后批量重新预约');
+          await siteAppointments.cancel('正在批量重新预约');return send(200,{batch:reviews.startBatch(input.date,input.requestId)});
+        }
+        if(req.method==='POST'&&url.pathname==='/api/reviews/batch/cancel'){const input=await body(req);return send(200,{batch:reviews.cancelBatch(input.batchId)});}
         if (req.method === 'POST' && ['/api/reviews/recheck','/api/reviews/open'].includes(url.pathname)) { const input=await body(req);await siteAppointments.cancel('已切换至预约核对'); return send(200,await (url.pathname.endsWith('/open')?reviews.openWebsite(input.jobId):reviews.recheck(input.jobId))); }
         if (req.method === 'POST' && url.pathname === '/api/reviews/rebook') {
           const input=await body(req);if(shuttingDown||pendingStart)throw new Error('程序正在启动或退出，请稍后重新预约');

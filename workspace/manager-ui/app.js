@@ -6,6 +6,8 @@ const fmt = (ms, full = false) => Number.isFinite(Number(ms)) ? new Date(Number(
 const identity = a => a.accountOwner || a.owner || a.username || a.accountLabel || '未分配账号';
 const labels = { queued:'等待准备', preparing:'登录准备中', ready:'等待开放', saving:'正在保存', success:'预约成功', already_exists:'已存在', failed:'执行失败', needs_review:'需核对', missed:'已错过', retrying:'等待重试', skipped:'已跳过', disabled:'未分配', planned:'计划中' };
 const reviewBusy = new Set();
+let batchStartPending=false;
+const batchActive=()=>['running','cancelling'].includes(state?.rebookingBatch?.state);
 const needsAction = j => ['needs_review','failed','missed'].includes(j.status);
 const jobLabel = j => ['checking','saving'].includes(j.manualRebooking?.state)?'手动重新预约中':j.status==='needs_review'&&j.review?.protocol>=2 ? j.review.manualRequired?'请自主复核':j.review.state==='rebooking'||j.review.stage==='rebook'?'首次复核后补约中':j.review.state==='checking'?(j.review.stage==='post_rebook'?'补约后即时复核中':j.review.stage==='delayed'?(j.review.protocol===3?'最终复核中':'再次复核中'):'首次复核中'):j.review.stage==='delayed'?(j.review.protocol===3?'等待最终复核':'等待再次复核'):'等待立即复核' : j.status==='needs_review' ? ({waiting:'待自动核对',checking:'正在核对',failed:'核对失败'}[j.review?.state]||'需核对') : ['waiting','running'].includes(j.recovery?.state) ? (j.recovery.state==='waiting'?'等待网站恢复':'恢复预约中') : labels[j.status]||j.status;
 const jobTone = j => ['checking','saving'].includes(j.manualRebooking?.state)||j.status==='needs_review'||['waiting','running'].includes(j.recovery?.state)?'review':['success','already_exists'].includes(j.status)?'good':['failed','missed'].includes(j.status)?'bad':'muted';
@@ -19,7 +21,7 @@ function reviewActions(job) {
       finally{reviewBusy.delete(job.id);action.textContent=text;await refresh();if(view==='reports')loadSummary();}
     });
     const ended=Date.parse(`${job.date}T${job.start}:00+08:00`)<=(state?.serverTime||Date.now());
-    action.disabled=reviewBusy.has(job.id)||['checking','rebooking'].includes(job.review?.state)||['checking','saving'].includes(job.manualRebooking?.state)||(mode==='rebook'&&ended&&job.status!=='needs_review');
+    action.disabled=batchActive()||reviewBusy.has(job.id)||['checking','rebooking'].includes(job.review?.state)||['checking','saving'].includes(job.manualRebooking?.state)||(mode==='rebook'&&ended&&job.status!=='needs_review');
     if(mode==='rebook'){action.dataset.action='rebook';action.title=ended?(job.status==='needs_review'?'仅核对原预约结果；使用时段已开始，不再提交':'原使用时段已开始，无法重新预约'):'使用原账号和设备核对原时段，确认未预约且空闲后重新提交';}root.append(action);
   }
   return root;
@@ -126,6 +128,7 @@ function renderSettings() {
   $('#retry-explanation').textContent=`保存前短暂错误额外重试${state.config.retryPolicy.taskRetries}次；验证码点击刷新后额外重试${state.config.retryPolicy.captchaRetries}次。保存结果不明确时立即复核；${state.config.reviewRebookEnabled!==false?'未确认先核对空闲并额外补约一次，再即时复核；仍未确认':'未确认'}则等待${state.config.reviewPolicy.retryIntervalSeconds??state.config.reviewPolicy.retryIntervalMinutes*60}秒后最终复核。最终未确认会明确提醒你自主复核。`;
 }
 function renderAutomaticState(now=Date.now()+offset){
+  if(batchActive()){const b=state.rebookingBatch,caption=`批量重新预约 · ${b.date} · ${b.processed}/${b.total}${b.state==='cancelling'?' · 正在停止':''}`;$('#persistent-run-status').textContent=caption;$('#running-state').textContent=caption;$('#running-state').className='state-chip checking';$('#control-button').textContent='停止批量';$('#control-button').disabled=b.state==='cancelling';return;}
   const manual=state?.jobs.find(j=>['checking','saving'].includes(j.manualRebooking?.state));
   if(manual){const caption=manual.manualRebooking.state==='saving'?'正在重新预约 · 保存中':'正在重新预约 · 单次手动任务';$('#persistent-run-status').textContent=caption;$('#running-state').textContent=caption;$('#running-state').className='state-chip checking';$('#control-button').textContent='取消重新预约';return;}
   if(!state)return;const a=state.autoActivation,root=$('#automatic-start-status');if(!a){root.textContent='自动开始状态暂不可用';return;}
@@ -235,8 +238,9 @@ function planJobs() { return preview?.date===$('#plan-date').value?preview.jobs:
 const planOpen = new Map();
 let planSignature;
 function renderPlan() {
+  renderBatchRebooking();
   const jobs=planJobs(),root=$('#plan-list');
-  const signature=JSON.stringify([jobs,state.jobs,$('#plan-date').value,state.config.enabled]);
+  const signature=JSON.stringify([jobs,state.jobs,$('#plan-date').value,state.config.enabled,batchActive()]);
   if(signature===planSignature)return;planSignature=signature;
   root.replaceChildren();
   $('#plan-release-date').textContent=jobs.length?day(jobs[0].releaseAt)+' 开放':'选择日期后预览';
@@ -256,6 +260,21 @@ function renderPlan() {
     group.append(slots);root.append(group);
   }
 }
+
+let batchResultSignature;
+function renderBatchRebooking(){
+  const b=state.rebookingBatch,date=$('#plan-date').value,count=state.rebookingCounts?.[date]||0,active=batchActive();
+  $('#batch-rebook').textContent=active?'批量处理中':`批量重新预约${count?'（'+count+'）':''}`;
+  $('#batch-rebook').disabled=batchStartPending||active||state.pendingStart||!count;
+  $('#batch-stop').hidden=!active;$('#batch-stop').disabled=b?.state==='cancelling';
+  $('#batch-status').textContent=b?`${b.date} · ${{running:'处理中',cancelling:'正在停止',completed:'已完成',cancelled:'已停止',interrupted:'已中断'}[b.state]||b.state} · 已处理 ${b.processed}/${b.total} · 补约成功 ${b.booked} · 已约跳过 ${b.existing} · 需核对 ${b.review} · 失败 ${b.failed} · 跳过 ${b.skipped}${b.remaining?' · 未处理 '+b.remaining:''}。${b.message}`:`所选日期共有 ${count} 条失败或需核对记录。逐条先核对，确认未预约且空闲后提交。`;
+  const progress=$('#batch-progress');progress.hidden=!b;progress.max=Math.max(1,b?.total||1);progress.value=b?.processed||0;
+  $('#batch-results').hidden=!b;
+  const signature=JSON.stringify(b);if(signature===batchResultSignature)return;batchResultSignature=signature;
+  const rows=$('#batch-rows');rows.replaceChildren();
+  for(const item of b?.items||[]){const tr=make('tr'),label={booked:'补约成功',exists:'已有预约，跳过',review:'需人工核对',failed:'处理失败',skipped:'已跳过'}[item.outcome]||{queued:'等待处理',processing:'正在核对及处理',unprocessed:'未处理'}[item.state]||item.state;tr.append(make('td','',item.start+'–'+item.end),make('td','',item.equipmentName),make('td',item.outcome==='booked'||item.outcome==='exists'?'good':'review',label),make('td','',item.message||'等待逐条核对'));rows.append(tr);}
+}
+async function stopBatch(){try{await api('reviews/batch/cancel',{batchId:state.rebookingBatch.id});}finally{await refresh();}}
 
 let windowSignature;
 function renderWindows() {
@@ -397,10 +416,12 @@ $('#account-form').addEventListener('submit',async e=>{e.preventDefault();const 
 $('#add-account').addEventListener('click',()=>editAccount());$('#empty-add-account').addEventListener('click',()=>editAccount());
 for(const node of document.querySelectorAll('.nav'))node.addEventListener('click',()=>{view=node.dataset.view;document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===node));document.querySelectorAll('.view').forEach(n=>n.classList.toggle('active',n.id==='view-'+view));const text=node.textContent.replace(/[◈◎▦⊘≡✓▤⚙0-9]/g,'').trim();$('#page-title').textContent=text;$('#breadcrumb').textContent=text;$('#page-description').textContent=view==='settings'?'修改后自动保存；运行过程中也可编辑，后续任务使用新配置。':view==='windows'?'勾选预约窗口后，每日从启用账号中随机分配，无需固定绑定账号。':'本机后台运行，每次半小时，按时预约。';if(view==='reports')loadSummary();if(view==='site')startSiteRead();if(view==='windows')loadAssignment().catch(e=>toast(e.message,true));});
 async function control(enabled){await window.cellStationFlush();if(enabled){controlPending=true;render();}try{await api('control',{enabled});toast(enabled?'调度已启动；实际任务准备时连接网站并登录':'调度已暂停');}finally{controlPending=false;await refresh();}}
-$('#control-button').addEventListener('click',()=>control(!(state.config.enabled||state.pendingStart||controlPending||state.jobs.some(j=>['checking','saving'].includes(j.manualRebooking?.state)))).catch(e=>toast(e.message,true)));
+$('#control-button').addEventListener('click',()=> (batchActive()?stopBatch():control(!(state.config.enabled||state.pendingStart||controlPending||state.jobs.some(j=>['checking','saving'].includes(j.manualRebooking?.state))))).catch(e=>toast(e.message,true)));
 $('#cancel-start').addEventListener('click',()=>control(false).catch(e=>toast(e.message,true)));
 async function previewPlan(){const date=$('#plan-date').value,request=++previewRequest;try{const result=await api('simulate',{date});if(request!==previewRequest||date!==$('#plan-date').value)return;preview=result;renderPlan();}catch(e){if(request===previewRequest)toast(e.message,true);}}
 $('#simulate-button').addEventListener('click',previewPlan);$('#plan-date').addEventListener('change',previewPlan);
+$('#batch-rebook').addEventListener('click',async()=>{if(batchStartPending||batchActive())return;const date=$('#plan-date').value;batchStartPending=true;renderBatchRebooking();try{await window.cellStationFlush();const result=await api('reviews/batch/start',{date,requestId:crypto.randomUUID()});toast(`已开始处理 ${result.batch.date} 的 ${result.batch.total} 条记录`);}catch(e){toast(e.message,true);}finally{batchStartPending=false;await refresh();}});
+$('#batch-stop').addEventListener('click',()=>stopBatch().catch(e=>toast(e.message,true)));
 for(const [id,key] of [['setting-autostart','autoStart'],['setting-start-booking','startBookingOnLaunch'],['setting-resume','resumeSchedule'],['setting-notifications','failureNotifications']])$('#'+id).addEventListener('change',()=>{const value=$('#'+id).checked;autosave('desktop-'+key,()=>api('desktop/settings',{[key]:value},'PUT'),0);});
 $('#repair-startup').addEventListener('click',()=>autosave('desktop-autoStart',()=>api('desktop/settings',{autoStart:true},'PUT'),0));
 $('#setting-theme').addEventListener('change',()=>{theme();const value=$('#setting-theme').value;autosave('theme',()=>api('theme',{theme:value},'PUT'),0);});
