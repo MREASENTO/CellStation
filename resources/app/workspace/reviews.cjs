@@ -120,6 +120,7 @@ class Reviews {
   async query(target,entry) {
     if(this.closed)throw new Error('程序正在退出');entry ||= await this.session(target,false);
     const page=entry.page,href=await page.locator('a.user').getAttribute('href'),userId=href?.match(/index[.](\d+)/)?.[1];if(!userId)throw new Error('无法确认登录身份，未更新预约结果');
+    if(entry.userId&&userId!==entry.userId)throw new Error('登录身份已变化，未更新预约结果');
     const identity=require('./site-identity.cjs');identity.recordIdentity(this.store,target.account.id,userId,target.account);entry.userId=userId;
     const plan=reviewPlan(target.job),readAt=this.clock(),rows=await this.components(page,plan.weekStart),match=identity.coveringOurs(rows,plan,[userId,...identity.knownIdentities(this.store).map(a=>a.profileId)],this.store.data.config.teamMembers||[]);
     if(match){try{this.onCalendar?.(target.job,{components:rows,weekStart:plan.weekStart,readAt,checkedAt:this.clock()});}catch{}}

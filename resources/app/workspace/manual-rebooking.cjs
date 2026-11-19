@@ -48,10 +48,10 @@ function rebook(reviews,id,requestId,options={}){
   const history=[...(job.manualRebookingHistory||[]),...(job.manualRebooking?[job.manualRebooking]:[])].slice(-30);
   // Stop the old five-minute recovery before reserving the account for this explicit action.
   reviews.store.job(job,{manualRebooking:attempt,manualRebookingHistory:history,recovery:job.recovery?{...job.recovery,state:'stopped'}:undefined,...(needsPrecheck?{review:{...job.review,protocol:3,state:'checking',stage:'manual_rebook',nextAt:null,automatic:false,manualRequired:false,notice:undefined,message:'正在核对原预约结果；确认未预约后才重新提交'}}:{})});
-  const onStep=recorder(reviews.store,job,reviews.clock),patch=changes=>{Object.assign(attempt,changes);reviews.store.job(job,{manualRebooking:{...attempt}});};let entry;
+  const onStep=recorder(reviews.store,job,reviews.clock),patch=changes=>{Object.assign(attempt,changes);reviews.store.job(job,{manualRebooking:{...attempt}});};let entry,sessionHealthy=false;
   onStep('manual_rebook_start','手动重新预约：使用原账号、原设备及原时段');
   try{
-   gate(!needsPrecheck);entry=await reviews.session(target,false);gate(!needsPrecheck);
+   gate(!needsPrecheck);entry=options.sessionPool?await options.sessionPool.acquire(target,onStep,options.cancelled):await reviews.session(target,false);gate(!needsPrecheck);
    if(needsPrecheck){
     onStep('manual_rebook_precheck','重新预约前自动核对原账号、原设备及原时段');
     const checked=await reviews.query(target,entry);gate(false);
@@ -61,15 +61,15 @@ function rebook(reviews,id,requestId,options={}){
     if(checked.match){
      patch({state:'already_exists',finishedAt:checkedAt,confirmedAt:checkedAt,reservationId:checked.match.id,message});
      reviews.store.job(job,{status:'already_exists',reservationId:checked.match.id,recheckedAt:checkedAt,confirmedAt:checkedAt,verifiedAt:new Date(checkedAt).toISOString(),message,review:checkedReview(reviews.store.data.jobs[id],attempt,checkedAt,'verified',message)});
-     onStep('manual_rebook_confirmed',message);return result(reviews.store.data.jobs[id]);
+     onStep('manual_rebook_confirmed',message);sessionHealthy=true;return result(reviews.store.data.jobs[id]);
     }
     reviews.store.job(job,{review:{...checkedReview(reviews.store.data.jobs[id],attempt,checkedAt,'not_found',message),state:'checking',stage:'manual_rebook',manualRequired:false,notice:undefined}});
    }
    gate();
-   const identity=require('./site-identity.cjs'),request={date:job.date,start:job.start,end:job.end},options={rules:target.rules,onStep,onCalendar:snapshot=>reviews.onCalendar?.(job,snapshot),onIdentity:userId=>identity.recordIdentity(reviews.store,target.account.id,userId,target.account),profileIds:()=>identity.knownIdentities(reviews.store).map(a=>a.profileId),teamMembers:()=>reviews.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(reviews.store).length===reviews.store.data.accounts.length};
-   const first=await reviews.bookingApi.preflightBooking(entry.page,request,options);gate();
-   const prepared=first.alreadyExists?first:await reviews.bookingApi.prepareBooking(entry.page,request,{...options,preflight:first});gate();
-   const booked=prepared.alreadyExists?{status:'already_exists',reservationId:prepared.reservationId}:await reviews.bookingApi.commitBooking(entry.page,request,{...options,expectedUserId:first.userId,beforeSave:()=>{
+   const identity=require('./site-identity.cjs'),request={date:job.date,start:job.start,end:job.end},bookingOptions={rules:target.rules,onStep,onCalendar:snapshot=>reviews.onCalendar?.(job,snapshot),onIdentity:userId=>{if(entry.userId&&String(userId)!==entry.userId)throw new Error('登录身份已变化，未保存');return identity.recordIdentity(reviews.store,target.account.id,userId,target.account);},profileIds:()=>identity.knownIdentities(reviews.store).map(a=>a.profileId),teamMembers:()=>reviews.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(reviews.store).length===reviews.store.data.accounts.length};
+   const first=await reviews.bookingApi.preflightBooking(entry.page,request,bookingOptions);gate();
+   const prepared=first.alreadyExists?first:await reviews.bookingApi.prepareBooking(entry.page,request,{...bookingOptions,preflight:first});gate();
+   const booked=prepared.alreadyExists?{status:'already_exists',reservationId:prepared.reservationId}:await reviews.bookingApi.commitBooking(entry.page,request,{...bookingOptions,expectedUserId:first.userId,beforeSave:()=>{
     gate();if(needsPrecheck&&attempt.precheckOutcome!=='not_found')throw new Error('尚未完成预约结果核对，未重新提交');if(attempt.submittedAt!==undefined)throw new Error('本次手动请求已提交，请先核对结果');
     patch({state:'saving',submittedAt:reviews.clock()});onStep('manual_rebook_submit','手动重新预约开始保存，本次请求不重复提交');
    }});
@@ -78,6 +78,7 @@ function rebook(reviews,id,requestId,options={}){
    patch({state:status,finishedAt:reviews.clock(),confirmedAt,reservationId:booked.reservationId,message});
    onStep('manual_rebook_confirmed',message);
    reviews.store.job(job,{status,reservationId:booked.reservationId,confirmedAt,verifiedAt:new Date(confirmedAt).toISOString(),confirmationDelayMs:confirmedAt-job.releaseAt,submissionToConfirmationMs:attempt.submittedAt!==undefined?confirmedAt-attempt.submittedAt:undefined,message,review:job.review||needsPrecheck?{...reviews.store.data.jobs[id].review,state:'verified',stage:'finished',nextAt:null,manualRequired:false,notice:undefined,message}:undefined});
+   sessionHealthy=true;
   }catch(error){
    const message=safeError(error),diagnosticId=await captureFailure(reviews.root,job,'manual-rebook',error,entry?.page||reviews.sessions.get(id)?.page).catch(()=>undefined);
    patch({state:attempt.submittedAt!==undefined?'uncertain':'failed',finishedAt:reviews.clock(),message});onStep('manual_rebook_finished',message);
@@ -88,7 +89,7 @@ function rebook(reviews,id,requestId,options={}){
     const checked=reviews.finish(reviews.store.data.jobs[id],match,detail,false,'post_rebook',startedAt,match?'verified':'error');
     patch({state:checked.verified?'already_exists':'uncertain',...(checked.verified?{confirmedAt:reviews.clock(),reservationId:match.id}:{}),message:checked.message,finishedAt:reviews.clock()});
    }else {const detail=needsPrecheck?'重新预约未完成，原预约结果仍需核对：'+message:'手动重新预约未完成：'+message;reviews.store.job(job,{status:needsPrecheck?'needs_review':'failed',diagnosticId,message:detail,...(needsPrecheck?{review:checkedReview(reviews.store.data.jobs[id],attempt,reviews.clock(),attempt.precheckOutcome||'error',detail)}:{})});}
-  }finally{const active=reviews.sessions.get(id);reviews.sessions.delete(id);await active?.browser.close().catch(()=>{});}
+  }finally{const active=entry||reviews.sessions.get(id);reviews.sessions.delete(id);if(options.sessionPool)await options.sessionPool.release(target,active,sessionHealthy);else await active?.browser.close().catch(()=>{});}
   return result(reviews.store.data.jobs[id]);
  }).finally(()=>reviews.manualRequests.delete(id));
 }
