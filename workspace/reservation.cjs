@@ -19,11 +19,12 @@ async function openEquipment(page, rules) {
 function notifyCalendar(options,snapshot){try{options.onCalendar?.(snapshot);}catch{/* Optional display cache cannot change a verified reservation. */}}
 
 async function checkAvailability(page, plan, options = {}) {
+  if(/\/login\/?$/.test(new URL(page.url()).pathname))throw require('./scheduled-sessions.cjs').expired();
   if (!new URL(page.url()).pathname.includes(`index.${plan.equipmentId}.reserv`)) throw new Error('当前仪器页面不匹配');
   const weekStart = await ensureWeek(page, plan.start);
   const profile = await page.locator('a.user').getAttribute('href');
-  const userId = profile.match(/index\.(\d+)/)?.[1];
-  if (!userId) throw new Error('无法确认当前登录账号');
+  const userId = profile?.match(/index\.(\d+)/)?.[1];
+  if (!userId) throw require('./scheduled-sessions.cjs').expired('无法确认当前登录账号，需重新登录核对');
   await options.onIdentity?.(userId);
   const readAt=Date.now(),components=await calendarComponents(page, weekStart),calendarSnapshot={components,weekStart,readAt,checkedAt:Date.now()},assessment = assessComponents(components, plan, userId);
   const {coveringOurs,oneOwner,teamMatch}=require('./site-identity.cjs');
@@ -172,8 +173,13 @@ async function calendarComponents(page, weekStart) {
     const url = new URL('/cf/main/!calendars/calendar', page.url());
     url.search = new URLSearchParams({ _ajax: '1', _object: 'week_components', _event: 'get', dtstart: String(weekStart), dtend: String(weekStart + 7 * 86400 - 1), calendar: calendarId, start: String(start), step: '50' }).toString();
     const response = await page.request.get(url.href);
+    if([401,403].includes(response.status?.())||response.url&&/\/login\/?$/.test(new URL(response.url()).pathname))throw require('./scheduled-sessions.cjs').expired();
     if (!response.ok()) throw new Error('Calendar data request failed');
-    const data = await response.json();
+    let data;
+    try{data=await response.json();}catch(error){
+      if(/text\/html/i.test(response.headers?.()['content-type']||'')){const html=await response.text().catch(()=>'');if(/name=["'](?:password|vfcode)["']|\/main\/login/.test(html))throw require('./scheduled-sessions.cjs').expired();}
+      throw error;
+    }
     if (!Array.isArray(data.components)) throw new Error('Calendar data schema changed');
     result.push(...data.components);
     if (!data.components.length) return result;

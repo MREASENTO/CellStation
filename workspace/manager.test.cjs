@@ -141,13 +141,13 @@ test('background browser context and process close when an account task finishes
 });
 test('equipment navigation failure also closes the background task browser', async () => {
   const { BrowserWorker } = require('./browser-worker.cjs');
-  const worker = new BrowserWorker({}, path.resolve(__dirname, '..'));
+  const worker = new BrowserWorker({data:{accounts:[{id:'test',username:'dummy',revision:1}],config:{enabled:true}}},fs.mkdtempSync(path.join(tempRoot,'navigation-')));
   let contextClosed = 0, browserClosed = 0;
   const context = { close: async () => { contextClosed++; } };
   const session = { context, page: { url: () => { throw new Error('navigation failed'); } } };
-  worker.sessions.set('test', session); worker.contexts.add(context);
+  worker.contexts.add(context);
   worker.browser = { close: async () => { browserClosed++; } };
   worker.session = async () => session;
-  await assert.rejects(worker.prepare({ accountId: 'test' }), /navigation failed/);
+  await assert.rejects(worker.prepare({id:'test',accountId:'test'}), /navigation failed/);
   assert.equal(contextClosed, 1); assert.equal(browserClosed, 1);
 });
