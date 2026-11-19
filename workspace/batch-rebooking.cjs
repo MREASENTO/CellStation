@@ -35,6 +35,8 @@ class BatchRebooking {
  }
  async process(batch,version){
   const stopped=()=>this.reviews.closed||batch.state==='cancelling'||this.reviews.controlVersion()!==version;
+  const pool=this.sessionPool=new (require('./batch-sessions.cjs').BatchSessions)(this.reviews,metrics=>{batch.sessionStats=metrics;this.store.persist();});
+  try{
   for(const item of batch.items){
    if(stopped())break;
    const job=this.store.data.jobs[item.jobId];
@@ -44,18 +46,19 @@ class BatchRebooking {
    }
    batch.currentJobId=job.id;item.state='processing';batch.message=`正在核对 ${batch.date} ${item.start}–${item.end} · ${item.equipmentName}`;this.store.persist();
    try{
-    const result=await this.reviews.rebook(job.id,randomUUID(),{batchId:batch.id,verifyFirst:true,cancelled:stopped});
+    const result=await this.reviews.rebook(job.id,randomUUID(),{batchId:batch.id,verifyFirst:true,cancelled:stopped,sessionPool:pool});
     Object.assign(item,{state:'done',outcome:result.status==='success'?'booked':result.status==='already_exists'?'exists':result.status==='needs_review'?'review':'failed',message:result.message});
    }catch(error){Object.assign(item,{state:'done',outcome:'failed',message:safeError(error)});}
    item.finishedAt=this.clock();batch.currentJobId=null;this.store.persist();
   }
+  }finally{await pool.close();this.sessionPool=null;}
   batch.state=stopped()?'cancelled':'completed';batch.currentJobId=null;batch.finishedAt=this.clock();
   for(const item of batch.items)if(item.state==='queued'){item.state='unprocessed';item.message='任务已停止，未处理';}
   batch.message=batch.state==='completed'?'批量重新预约已完成':'批量重新预约已停止，未处理记录保持原状态';this.store.persist();
  }
  cancel(id){
   const batch=this.store.data.rebookingBatch;if(id&&batch?.id!==id)throw new Error('批量任务已变化，请刷新后重试');
-  if(batch&&this.active){batch.state='cancelling';batch.message='正在停止批量任务；保存结果不明确时仅核对，不重复提交';this.store.persist();const entry=this.reviews.sessions.get(batch.currentJobId);entry?.browser.close().catch(()=>{});}
+  if(batch&&this.active){batch.state='cancelling';batch.message='正在停止批量任务；保存结果不明确时仅核对，不重复提交';this.store.persist();const entry=this.reviews.sessions.get(batch.currentJobId);if(this.sessionPool){this.sessionPool.close().catch(()=>{});this.sessionPool.closeEntry(entry).catch(()=>{});}else entry?.browser.close().catch(()=>{});}
   return this.publicState();
  }
 }
