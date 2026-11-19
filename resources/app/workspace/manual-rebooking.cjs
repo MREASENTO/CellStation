@@ -18,12 +18,13 @@ function recoverManual(reviews){
  for(const job of Object.values(reviews.store.data.jobs)){
   const attempt=job.manualRebooking;if(!attempt||!pendingStates.has(attempt.state))continue;
   const uncertain=attempt.submittedAt!==undefined,now=reviews.clock();
-  const keepReview=attempt.previousStatus==='needs_review',message=uncertain?'上次手动保存结果不明确，转入复核；不会自动重新提交':keepReview?'上次重新预约前核对已中断，原预约结果仍待核对；未再次提交':'上次手动重新预约已中断，可再次点击重新预约';
+  const keepReview=attempt.previousStatus==='needs_review'||attempt.verifyFirst,message=uncertain?'上次手动保存结果不明确，转入复核；不会自动重新提交':keepReview?'上次重新预约前核对已中断，原预约结果仍待核对；未再次提交':'上次手动重新预约已中断，可再次点击重新预约';
   reviews.store.job(job,{status:uncertain||keepReview?'needs_review':'failed',manualRebooking:{...attempt,state:uncertain?'uncertain':'interrupted',finishedAt:now,message},recovery:job.recovery?{...job.recovery,state:'stopped'}:undefined,...(uncertain?{review:uncertainReview(job,attempt,now)}:keepReview?{review:checkedReview(job,attempt,now,'error',message)}:{}),message});
  }
 }
 function result(job){return {verified:['success','already_exists'].includes(job.status),status:job.status,message:job.manualRebooking?.message||job.message};}
-function rebook(reviews,id,requestId){
+function rebook(reviews,id,requestId,options={}){
+ if(reviews.batchRebooking?.active&&(!options.batchId||reviews.store.data.rebookingBatch?.id!==options.batchId||reviews.store.data.rebookingBatch?.currentJobId!==id))return Promise.reject(new Error('批量重新预约正在处理，请等待完成或停止后再操作'));
  if(typeof id!=='string'||!Object.hasOwn(reviews.store.data.jobs,id)||typeof requestId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))return Promise.reject(new Error('重新预约请求无效'));
  const current=reviews.store.data.jobs[id];
  if(reviews.pending.has(id))return reviews.manualRequests.get(id)===requestId?reviews.pending.get(id):Promise.reject(new Error('该记录正在处理，请等待当前操作完成'));
@@ -33,9 +34,9 @@ function rebook(reviews,id,requestId){
   const target=reviews.target(id),job=target.job;
   if(!eligibleStates.has(job.status))throw new Error('仅失败、已错过或需核对的记录可重新预约');
   if(reviews.sessions.has(id)||reviews.otherAccountBusy(target.account.id,id))throw new Error('原账号有核对任务或网页正在使用，请关闭后重试');
-  const needsPrecheck=job.status==='needs_review',version=reviews.controlVersion(),gate=(checkTime=true)=>{
+  const needsPrecheck=job.status==='needs_review'||options.verifyFirst===true,version=reviews.controlVersion(),gate=(checkTime=true)=>{
    const live=reviews.store.data.jobs[id],account=reviews.store.data.accounts.find(a=>a.id===target.account.id),plan=reviewPlan(job),now=reviews.clock();
-   if(reviews.closed||reviews.controlVersion()!==version)throw new Error('手动重新预约已取消，未再次提交');
+   if(reviews.closed||reviews.controlVersion()!==version||options.cancelled?.())throw new Error('手动重新预约已取消，未再次提交');
    if(!account||account.username!==target.account.username||account.revision!==target.account.revision)throw new Error('原账号配置已变化，请重新操作');
    if(checkTime&&now>=plan.start*1000)throw new Error('原使用时段已开始，无法重新预约');
    if(checkTime&&now<(plan.end-target.rules.release.advanceDays*86400)*1000)throw new Error('原时段尚未开放预约');
@@ -43,7 +44,7 @@ function rebook(reviews,id,requestId){
    if(!eligibleStates.has(live?.status)||live.manualRebooking?.requestId!==requestId)throw new Error('预约状态已变化，请刷新记录');
   };
   if(!reviews.canRun({...job,accountId:target.account.id}))throw new Error('原账号正在执行其他预约，请稍后重试');
-  const attempt={requestId,accountId:target.account.id,state:'checking',startedAt:reviews.clock(),previousStatus:job.status,previousMessage:job.message,previousReview:job.review};
+  const attempt={requestId,accountId:target.account.id,state:'checking',startedAt:reviews.clock(),previousStatus:job.status,previousMessage:job.message,previousReview:job.review,...(options.batchId?{batchId:options.batchId,verifyFirst:true}:{})};
   const history=[...(job.manualRebookingHistory||[]),...(job.manualRebooking?[job.manualRebooking]:[])].slice(-30);
   // Stop the old five-minute recovery before reserving the account for this explicit action.
   reviews.store.job(job,{manualRebooking:attempt,manualRebookingHistory:history,recovery:job.recovery?{...job.recovery,state:'stopped'}:undefined,...(needsPrecheck?{review:{...job.review,protocol:3,state:'checking',stage:'manual_rebook',nextAt:null,automatic:false,manualRequired:false,notice:undefined,message:'正在核对原预约结果；确认未预约后才重新提交'}}:{})});

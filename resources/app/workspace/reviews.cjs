@@ -23,6 +23,7 @@ class Reviews {
     this.launch = launch || (options => require('playwright').chromium.launch(options));
     this.sessions = new Map(); this.pending = new Map(); this.pendingPersonal = new Map(); this.closed = false;
     this.manualRequests = new Map();require('./manual-rebooking.cjs').recoverManual(this);
+    this.batchRebooking=new (require('./batch-rebooking.cjs').BatchRebooking)(this);
     for(const job of Object.values(store.data.jobs)) {
       if(job.status!=='needs_review')continue;
       if(job.review?.protocol>=2&&['checking','rebooking'].includes(job.review.state)){const rebooking=job.review.rebooking;if(rebooking&&['checking','saving'].includes(rebooking.state))rebooking.state='interrupted';store.job(job,{review:{...job.review,...(rebooking?{rebooking}:{}),state:'waiting',nextAt:clock(),message:'上次复核中断，继续未完成的查询；已消耗的补约机会不会重置。'}});}
@@ -30,8 +31,12 @@ class Reviews {
     }
     this.reschedule();
   }
-  get active() { return this.sessions.size + this.pending.size; }
-  rebook(id,requestId) { return require('./manual-rebooking.cjs').rebook(this,id,requestId); }
+  get active() { return this.sessions.size + this.pending.size + (this.batchRebooking?.active?1:0); }
+  rebook(id,requestId,options) { return require('./manual-rebooking.cjs').rebook(this,id,requestId,options); }
+  startBatch(date,requestId){return this.batchRebooking.start(date,requestId);}
+  cancelBatch(id){return this.batchRebooking.cancel(id);}
+  batchState(){return this.batchRebooking.publicState();}
+  batchCounts(){return this.batchRebooking.counts();}
   otherAccountBusy(accountId,id) { return [...this.pendingPersonal].some(([key,value])=>key!==id&&value===accountId)||[...this.pending.keys()].some(key=>key!==id&&(this.store.data.jobs[key]?.accountId===accountId||this.store.data.jobs[key]?.manualRebooking?.accountId===accountId))||[...this.sessions].some(([key,e])=>key!==id&&e.accountId===accountId); }
   isAccountBusy(accountId) { return [...this.pendingPersonal.values()].includes(accountId)||[...this.pending.keys()].some(id=>this.store.data.jobs[id]?.accountId===accountId||this.store.data.jobs[id]?.manualRebooking?.accountId===accountId)||[...this.sessions.values()].some(e=>!e.visible&&e.accountId===accountId); }
   target(id) {
@@ -65,8 +70,9 @@ class Reviews {
   }
   start() { this.started=true;this.timer = setInterval(() => this.tick().catch(() => {}),1000); this.timer.unref?.();this.nudge(); }
   async tick() {
-    if(this.ticking||this.closed||!this.store.data.config.enabled)return;this.ticking=true;
+    if(this.ticking||this.closed||this.batchRebooking.active||!this.store.data.config.enabled)return;this.ticking=true;
     try{for(const item of Object.values(this.store.data.jobs)){
+      if(this.batchRebooking.active)break;
       if(item.status!=='needs_review')continue;const job=this.observe(item);
       if(job.review.state==='waiting'&&job.review.nextAt<=this.clock()&&!this.pending.size&&![...this.sessions.values()].some(e=>e.accountId===job.accountId)&&this.canRun(job)){
         try{await this.recheck(job.id,true);}catch(error){this.finish(job,null,safeError(error),true,job.review.stage==='rebook'?'post_rebook':job.review.stage||'immediate',this.clock(),'error');}
@@ -162,6 +168,7 @@ class Reviews {
     catch(error){return this.finish(job,null,safeError(error),automatic,'post_rebook',startedAt,'error');}
   }
   async recheck(id, automatic = false) {
+    if(this.batchRebooking.active)throw new Error('批量重新预约正在处理，请等待完成或停止后再操作');
     return this.run(id,async()=>{
       const current=this.store.data.jobs[id];if(current)this.observe(current);const target=this.target(id),job=target.job;
       if(['success','already_exists'].includes(job.status))return{verified:true,message:'该预约已经确认，无需再次核对'};
@@ -181,6 +188,7 @@ class Reviews {
     });
   }
   async openWebsite(id) {
+    if(this.batchRebooking.active)throw new Error('批量重新预约正在处理，请等待完成或停止后再打开网页');
     return this.run(id,async()=>{
       const existing=this.sessions.get(id);
       if(existing?.visible&&!existing.page?.isClosed()){await existing.page.bringToFront();return {opened:true,message:'已切换到原账号核对网页'};}
@@ -198,6 +206,7 @@ class Reviews {
     });
   }
   async openPersonal(accountId,equipmentId) {
+    if(this.batchRebooking.active)throw new Error('批量重新预约正在处理，请等待完成或停止后再打开网页');
     const account=this.store.data.accounts.find(a=>a.id===accountId);
     const equipment=(this.store.data.config.equipments||[]).find(e=>e.equipmentId===equipmentId);
     if(!account)throw new Error('请先选择本人账号');if(!equipment)throw new Error('请选择预约设备');
@@ -213,8 +222,10 @@ class Reviews {
   }
   async close() {
     this.closed=true;clearInterval(this.timer);
+    this.batchRebooking.cancel();
     await Promise.allSettled([...this.sessions.values()].map(entry=>entry.browser.close()));
     await Promise.allSettled([...this.pending.values()]);this.sessions.clear();
+    await this.batchRebooking.promise;
   }
 }
 module.exports={Reviews,reviewPlan,INTERVAL};
