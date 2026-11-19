@@ -9,10 +9,10 @@ const reviewBusy = new Set();
 const needsAction = j => ['needs_review','failed','missed'].includes(j.status);
 const jobLabel = j => ['checking','saving'].includes(j.manualRebooking?.state)?'手动重新预约中':j.status==='needs_review'&&j.review?.protocol>=2 ? j.review.manualRequired?'请自主复核':j.review.state==='rebooking'||j.review.stage==='rebook'?'首次复核后补约中':j.review.state==='checking'?(j.review.stage==='post_rebook'?'补约后即时复核中':j.review.stage==='delayed'?(j.review.protocol===3?'最终复核中':'再次复核中'):'首次复核中'):j.review.stage==='delayed'?(j.review.protocol===3?'等待最终复核':'等待再次复核'):'等待立即复核' : j.status==='needs_review' ? ({waiting:'待自动核对',checking:'正在核对',failed:'核对失败'}[j.review?.state]||'需核对') : ['waiting','running'].includes(j.recovery?.state) ? (j.recovery.state==='waiting'?'等待网站恢复':'恢复预约中') : labels[j.status]||j.status;
 const jobTone = j => ['checking','saving'].includes(j.manualRebooking?.state)||j.status==='needs_review'||['waiting','running'].includes(j.recovery?.state)?'review':['success','already_exists'].includes(j.status)?'good':['failed','missed'].includes(j.status)?'bad':'muted';
-function reviewActions(job,allowRebook=false) {
+function reviewActions(job) {
   const root=make('span','review-actions');root.dataset.jobId=job.id;
   if(!needsAction(job))return root;
-  for(const [mode,text]of [...(allowRebook&&['failed','missed'].includes(job.status)?[['rebook','重新预约']]:[]),['recheck','重新核对'],['open','打开网页核对']]){
+  for(const [mode,text]of [...(['failed','missed'].includes(job.status)?[['rebook','重新预约']]:[]),['recheck','重新核对'],['open','打开网页核对']]){
     const action=button(text,async()=>{
       if(reviewBusy.has(job.id))return;reviewBusy.add(job.id);action.textContent=mode==='rebook'?'正在重新预约…':mode==='recheck'?'正在核对…':'正在登录…';
       try{if(mode==='rebook')await window.cellStationFlush();const result=await api('reviews/'+mode,{jobId:job.id,...(mode==='rebook'?{requestId:crypto.randomUUID()}:{})});toast(result.message,false,result.verified||result.ready?'':'review');}
@@ -347,7 +347,7 @@ function renderHistory() {
     if(j.manualRebooking){const r=j.manualRebooking;detail.append(make('span','small '+(['success','already_exists'].includes(r.state)?'good':'review'),`手动重新预约 · ${fmt(r.startedAt,true)} · ${r.message||({checking:'正在核对并准备',saving:'正在保存'}[r.state]||r.state)}`));if(r.submittedAt)detail.append(make('span','small','手动保存调用 '+fmt(r.submittedAt,true)));if(r.confirmedAt)detail.append(make('strong','confirmation','手动预约确认 '+fmt(r.confirmedAt,true)));}
     if(j.manualRebooking?.previousMessage)detail.append(make('span','small','重新预约前结果：'+j.manualRebooking.previousMessage));
     if(j.manualRebookingHistory?.length){const h=make('details','timeline');h.append(make('summary','','查看此前手动重新预约记录'));for(const r of j.manualRebookingHistory)h.append(make('p','small',`${fmt(r.startedAt,true)} · ${r.message||r.state}${r.confirmedAt?' · 确认 '+fmt(r.confirmedAt,true):''} · 操作前结果：${r.previousMessage||'未记录'}`));detail.append(h);}
-    if(needsAction(j))detail.append(reviewActions(j,true));
+    if(needsAction(j))detail.append(reviewActions(j));
     if(j.savingAt) detail.append(make('span','small',(j.manualRebooking?'原始保存调用 ':'保存调用 ')+fmt(j.savingAt,true)));
     if(j.confirmedAt) detail.append(make('strong','confirmation','网站读回确认 '+fmt(j.confirmedAt,true)),make('span','small',`开放→确认 ${j.confirmationDelayMs} ms · 保存→确认 ${j.submissionToConfirmationMs ?? '—'} ms`));
     if(j.reservationId) detail.append(make('span','small','预约编号 '+j.reservationId));
