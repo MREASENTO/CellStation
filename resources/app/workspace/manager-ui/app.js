@@ -12,19 +12,19 @@ const jobTone = j => ['checking','saving'].includes(j.manualRebooking?.state)||j
 function reviewActions(job) {
   const root=make('span','review-actions');root.dataset.jobId=job.id;
   if(!needsAction(job))return root;
-  for(const [mode,text]of [...(['failed','missed'].includes(job.status)?[['rebook','重新预约']]:[]),['recheck','重新核对'],['open','打开网页核对']]){
+  for(const [mode,text]of [['rebook','重新预约'],['recheck','重新核对'],['open','打开网页核对']]){
     const action=button(text,async()=>{
       if(reviewBusy.has(job.id))return;reviewBusy.add(job.id);action.textContent=mode==='rebook'?'正在重新预约…':mode==='recheck'?'正在核对…':'正在登录…';
       try{if(mode==='rebook')await window.cellStationFlush();const result=await api('reviews/'+mode,{jobId:job.id,...(mode==='rebook'?{requestId:crypto.randomUUID()}:{})});toast(result.message,false,result.verified||result.ready?'':'review');}
       finally{reviewBusy.delete(job.id);action.textContent=text;await refresh();if(view==='reports')loadSummary();}
     });
     const ended=Date.parse(`${job.date}T${job.start}:00+08:00`)<=(state?.serverTime||Date.now());
-    action.disabled=reviewBusy.has(job.id)||job.review?.state==='checking'||['checking','saving'].includes(job.manualRebooking?.state)||(mode==='rebook'&&ended);
-    if(mode==='rebook'){action.dataset.action='rebook';action.title=ended?'原使用时段已开始，无法重新预约':'使用原账号和设备预约此时段；先核对团队已有预约，不启动整体调度';}root.append(action);
+    action.disabled=reviewBusy.has(job.id)||['checking','rebooking'].includes(job.review?.state)||['checking','saving'].includes(job.manualRebooking?.state)||(mode==='rebook'&&ended&&job.status!=='needs_review');
+    if(mode==='rebook'){action.dataset.action='rebook';action.title=ended?(job.status==='needs_review'?'仅核对原预约结果；使用时段已开始，不再提交':'原使用时段已开始，无法重新预约'):'使用原账号和设备核对原时段，确认未预约且空闲后重新提交';}root.append(action);
   }
   return root;
 }
-const steps = { manual_rebook_start:"手动重新预约开始",manual_rebook_submit:"手动重新预约保存",manual_rebook_confirmed:"手动重新预约确认",manual_rebook_finished:"手动重新预约处理结束", review_rebook_start:'首次复核后开始补约',review_rebook_empty:'补约前两次空闲核验',review_rebook_submit:'额外补约保存一次',review_rebook_finished:'补约处理结束', server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'预约保存请求已发送', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
+const steps = { manual_rebook_precheck:"重新预约前核对开始",manual_rebook_prechecked:"重新预约前核对完成", manual_rebook_start:"手动重新预约开始",manual_rebook_submit:"手动重新预约保存",manual_rebook_confirmed:"手动重新预约确认",manual_rebook_finished:"手动重新预约处理结束", review_rebook_start:'首次复核后开始补约',review_rebook_empty:'补约前两次空闲核验',review_rebook_submit:'额外补约保存一次',review_rebook_finished:'补约处理结束', server_release_wait:'等待服务器开放', slot_warmed:'时间已提前预选',final_availability_checked:'保存前新日历核对',save_response:'保存响应返回',receipt_warning:'回执生成提示', website_alert:'网站拒绝原因', open_form:'打开表单', form_opened:'表单已打开', prepare_start:'任务开始', browser_open:'后台浏览器就绪', login_page:'登录页加载', captcha_capture:'验证码截图', ocr_start:'OCR开始', ocr_complete:'OCR完成', captcha_refresh:'验证码刷新', login_submit:'提交登录', login_confirmed:'登录成功', equipment_open:'仪器日历加载', availability_checked:'目标周及冲突核对', ready:'准备就绪', release_reached:'到达开放时刻', form_verified:'表单填写与核对', save_click:'调用保存按钮', save_request:'预约保存请求已发送', save_click_returned:'保存点击返回', record_verified:'网站记录核实成功', result_confirmed:'结果确认完成' };
 let state, preview, restoreToken, view = 'overview', controlPending = false, offset = 0;
 let previewRequest = 0, summaryRequest = 0;
 const dateFollow = new DateFollow(), siteDateFollow=new DateFollow(0), dateIds = ['plan-date','summary-date','exclusion-date','assignment-date','site-date'];
@@ -341,7 +341,7 @@ function renderHistory() {
     if(j.review?.message&&j.review.message!==j.message)detail.append(make('span','small '+(j.review.state==='verified'?'good':'review'),j.review.message));
     if(j.recheckedAt)detail.append(make('strong','confirmation','复核读回确认 '+fmt(j.recheckedAt,true)));
     if(j.review?.state==='waiting')detail.append(make('span','small review',j.review.protocol>=2?(j.review.stage==='immediate'?'首次复核将在账号空闲后立即执行':j.review.stage==='rebook'?'将立即处理首次补约':'最终复核时间 '+fmt(j.review.nextAt,true)):'自动核对时间 '+fmt(j.review.nextAt,true)));
-    for(const h of j.review?.history||[]){const name={immediate:'首次复核',post_rebook:'补约后即时复核',delayed:j.review?.protocol===3?'最终复核':'再次复核',manual:'手动复核',legacy:'旧版复核'}[h.stage]||'复核';detail.append(make('span','small '+(h.outcome==='verified'?'good':'review'),`${name} ${fmt(h.checkedAt,true)} · ${h.outcome==='verified'?'已确认':'未确认'}`));}
+    for(const h of j.review?.history||[]){const name={manual_rebook:'重新预约前核对',immediate:'首次复核',post_rebook:'补约后即时复核',delayed:j.review?.protocol===3?'最终复核':'再次复核',manual:'手动复核',legacy:'旧版复核'}[h.stage]||'复核';detail.append(make('span','small '+(h.outcome==='verified'?'good':'review'),`${name} ${fmt(h.checkedAt,true)} · ${h.outcome==='verified'?'已确认':'未确认'}`));}
     if(j.review?.rebooking){const r=j.review.rebooking;detail.append(make('span','small review','首次补约：'+(r.message||r.state)+(r.submittedAt?' · 提交 '+fmt(r.submittedAt,true):'')+' · 最多额外提交一次'));}
     if(j.recovery?.state==='waiting')detail.append(make('span','small review','下次登录重试 '+fmt(j.recovery.nextAt,true)));
     if(j.manualRebooking){const r=j.manualRebooking;detail.append(make('span','small '+(['success','already_exists'].includes(r.state)?'good':'review'),`手动重新预约 · ${fmt(r.startedAt,true)} · ${r.message||({checking:'正在核对并准备',saving:'正在保存'}[r.state]||r.state)}`));if(r.submittedAt)detail.append(make('span','small','手动保存调用 '+fmt(r.submittedAt,true)));if(r.confirmedAt)detail.append(make('strong','confirmation','手动预约确认 '+fmt(r.confirmedAt,true)));}
