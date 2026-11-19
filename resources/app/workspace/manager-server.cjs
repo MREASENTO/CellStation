@@ -85,7 +85,7 @@ async function createManager(options = {}) {
         if (req.method === 'GET' && url.pathname === '/api/state') {
           const plan = scheduler.plan(7, true);
           const jobs = Object.values(store.data.jobs).sort((a, b) => b.releaseAt - a.releaseAt).slice(0, 200);
-          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), autoActivation:autoActivation?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, rebookingBatch:reviews.batchState?.()||null, rebookingCounts:reviews.batchCounts?.()||{}, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '2.0.6' });
+          return send(200, { application: 'cellstation-manager', desktop: Boolean(options.desktop), pendingStart, desktopSettings: options.desktopIntegration?.status() || null, operations: operations?.publicState(), siteAppointments:siteAppointments?.publicState(), autoActivation:autoActivation?.publicState(), wechat: wechat?.publicState(), updates: options.updater?.publicState(), csrfToken: csrf, serverTime: clock(), config: store.data.config, accounts: store.accounts(), windows: WINDOWS, plan, jobs, scheduledSessions:worker.sessionState?.()||null, rebookingBatch:reviews.batchState?.()||null, rebookingCounts:reviews.batchCounts?.()||{}, events: store.data.events, bindings: store.data.bindings, assignmentRevision: store.data.assignmentRevision, version: '2.0.7' });
         }
         if (req.method === 'PUT' && url.pathname === '/api/wechat') return send(200, await wechat.update(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/wechat/test') { await body(req); return send(200, await wechat.test()); }
@@ -278,7 +278,7 @@ async function createManager(options = {}) {
       const temp = path.join(ROOT, 'work', 'temp');
       fs.mkdirSync(temp, { recursive: true });
       process.env.TEMP = process.env.TMP = temp;
-      worker = new (require('./browser-worker.cjs').BrowserWorker)(store, ROOT);
+      worker = new (require('./browser-worker.cjs').BrowserWorker)(store, ROOT,{clock});
     }
     scheduler = new Scheduler(store, worker, clock);
     operations = new Operations({ root: options.operationsRoot || options.directory || ROOT, store, worker, clock, desktop: options.desktopIntegration, localCheck: options.localCheck, onProgress: options.onStartupProgress, canMaintain: () => !scheduler.busy.size && !pendingStart && !autoActivation?.imminent() && (!store.data.config.enabled || !scheduler.plan(1).some(j => j.releaseAt >= clock() - 60000 && j.releaseAt <= clock() + 120000)) });

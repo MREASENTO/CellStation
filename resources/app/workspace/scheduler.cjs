@@ -5,7 +5,7 @@ const { slotKey } = require('./equipment.cjs');
 const TERMINAL = new Set(['success', 'already_exists', 'failed', 'needs_review', 'missed']);
 const retryable = error => /timeout|timed out|network|ERR_CONNECTION|ERR_NETWORK|ERR_INTERNET|ERR_NAME_NOT_RESOLVED|ECONNRESET|ETIMEDOUT|验证码|OCR|网络|超时/i.test(String(error?.message || error)) && !/占用|冲突|密码错误|账号.*锁定|无效|不匹配|尚未|暂停|超过|禁止.*重试|schema changed/i.test(String(error?.message || error));
 const RECOVERY_INTERVAL = 5 * 60000;
-const recoverable = error => /timeout|timed out|network|ERR_|ECONN|ETIMEDOUT|网络|超时|服务器|HTTP 5\d\d|登录未通过|登录准备已超过执行时间/i.test(String(error?.message || error)) && !/占用|冲突|密码错误|账号.*(锁定|禁用|不存在)|验证码\/OCR未通过|OCR 未返回|无效|不匹配|尚未|暂停|禁止.*重试|schema changed/i.test(String(error?.message || error));
+const recoverable = error => error?.code==='AUTH_EXPIRED'||(/timeout|timed out|network|ERR_|ECONN|ETIMEDOUT|网络|超时|服务器|HTTP 5\d\d|登录未通过|登录准备已超过执行时间/i.test(String(error?.message || error)) && !/占用|冲突|密码错误|账号.*(锁定|禁用|不存在)|验证码\/OCR未通过|OCR 未返回|无效|不匹配|尚未|暂停|禁止.*重试|schema changed/i.test(String(error?.message || error)));
 const saveAttempted = job => Boolean(job?.savingAt || job?.timeline?.some(e => ['save_click','save_request'].includes(e.step)));
 class Scheduler {
   constructor(store, worker, clock = Date.now) {
@@ -279,6 +279,7 @@ class Scheduler {
       this.snapshots.delete(id);
       if (job.status === 'ready') this.store.job(job, { status: 'queued', recovery:this.pausedRecovery(job), message: '调度已暂停，后台页面已关闭' });
     }
+    await this.worker.clearIdleSessions?.();
   }
   async idle() { await Promise.allSettled([...this.busy.values()]); }
 }

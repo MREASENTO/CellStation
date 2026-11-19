@@ -6,7 +6,7 @@ const { openEquipment, warmSlot, preflightBooking, prepareBooking, commitBooking
 const { rulesFor, catalogue, verifyTarget } = require('./equipment.cjs');
 const { captureFailure, safeError } = require('./support-files.cjs');
 class BrowserWorker {
-  constructor(store, root) {
+  constructor(store, root, options = {}) {
     this.store = store;
     this.root = root;
     this.work = path.join(root, 'work');
@@ -16,13 +16,16 @@ class BrowserWorker {
     this.contexts = new Set();
     this.closing = null;
     this.closed = false;
-    this.bookingApi = { prepareBooking, preflightBooking, commitBooking };
+    this.clock=options.clock||Date.now;this.login=options.login||automaticLogin;this.open=options.open||openEquipment;this.warm=options.warm||warmSlot;this.launch=options.launch;
+    this.bookingApi = options.bookingApi||{ prepareBooking, preflightBooking, commitBooking };
+    this.openingContexts=0;this.scheduledSessions=new (require('./scheduled-sessions.cjs').ScheduledSessions)(this,options.idleMs);
+    this.sessionTimer=setInterval(()=>this.scheduledSessions.prune().catch(()=>{}),30000);this.sessionTimer.unref?.();
   }
   async getBrowser() {
     if (this.closed) throw new Error('程序正在退出，未启动浏览器');
     if (this.closing) await this.closing;
     if (this.browser?.isConnected()) return this.browser;
-    if (!this.launching) this.launching = require('playwright').chromium.launch({ channel: 'chrome', headless: true, args: ['--no-first-run', '--no-default-browser-check', '--disable-save-password-bubble'] }).then(browser => { this.browser = browser; return browser; }).finally(() => { this.launching = null; });
+    if (!this.launching) this.launching = (this.launch||require('playwright').chromium.launch.bind(require('playwright').chromium))({ channel: 'chrome', headless: true, args: ['--no-first-run', '--no-default-browser-check', '--disable-save-password-bubble'] }).then(browser => { this.browser = browser; return browser; }).finally(() => { this.launching = null; });
     return this.launching;
   }
   async session(accountId, separate = false, fresh = false, job = null) {
@@ -31,9 +34,8 @@ class BrowserWorker {
     const revision = this.store.data.accounts.find(a => a.id === accountId)?.revision || 0;
     if (!fresh && !separate && existing && existing.revision === revision && !existing.page.isClosed() && !await existing.page.locator('input[type="password"]:visible').count()) return existing;
     if (existing && !separate) { await existing.context.close().catch(() => {}); this.contexts.delete(existing.context); this.sessions.delete(sessionKey); }
-    const browser = await this.getBrowser();
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: 'zh-CN', timezoneId: 'Asia/Shanghai', acceptDownloads: false });
-    this.contexts.add(context);
+    this.openingContexts++;let context;
+    try{const browser=await this.getBrowser();context=await browser.newContext({viewport:{width:1440,height:1000},locale:'zh-CN',timezoneId:'Asia/Shanghai',acceptDownloads:false});this.contexts.add(context);}finally{this.openingContexts--;}
     let page;
     try {
       job?.onStep?.('browser_open', '无界面浏览器已启动');
@@ -43,9 +45,9 @@ class BrowserWorker {
       job?.onStep?.('login_page', '登录页面已加载');
       let credentials = await this.store.credentials(accountId, job?.runtime?.account);
       try {
-        await automaticLogin(page, credentials.username, credentials.password, this.work, {
+        await this.login(page, credentials.username, credentials.password, this.work, {
           onStep: job?.onStep, captchaRetries: (job?.runtime?.config || this.store.data.config).retryPolicy?.captchaRetries ?? 2,
-          deadline: job ? (job.recovery?.state==='running' ? Math.min(Date.now()+90000,Date.parse(`${job.date}T${job.start}:00+08:00`)-1) : job.releaseAt + (job.runtime?.config || this.store.data.config).graceSeconds * 1000) : Date.now() + 90000,
+          deadline: job ? (job.recovery?.state==='running' ? Math.min(this.clock()+90000,Date.parse(`${job.date}T${job.start}:00+08:00`)-1) : job.releaseAt + (job.runtime?.config || this.store.data.config).graceSeconds * 1000) : this.clock() + 90000,now:this.clock,
         });
       }
       finally { credentials.password = undefined; credentials = undefined; }
@@ -54,31 +56,38 @@ class BrowserWorker {
       return session;
     } catch (error) { await this.capture(job, 'login', error, page); await context.close().catch(() => {}); this.contexts.delete(context); await this.closeIdle(); throw error; }
   }
+  async locate(job,session){
+    const rules=rulesFor(job.equipment);await this.scheduledSessions.validate(job,session);
+    if(!new URL(session.page.url()).pathname.endsWith('/index.'+rules.equipmentId+'.reserv'))await this.open(session.page,rules);
+    await this.scheduledSessions.remember(job,session,rules);job.onStep?.('equipment_open','原账号身份及目标设备页面已确认');
+    const cancel=session.page.locator('.dialog_block:visible input[name="cancel"]');if(await cancel.count())await cancel.click();
+  }
   async prepare(job) {
-    // Each half-hour job starts a fresh authenticated context, avoiding unknown
-    // website session expiry between jobs while preserving the same account id.
-    let page;
-    try {
-      ({ page } = await this.session(job.accountId, false, true, job));
-      if (!new URL(page.url()).pathname.includes(`index.${job.equipment?.equipmentId || 37}.reserv`)) {
-        const rules = rulesFor(job.equipment);
-        await openEquipment(page, rules);
-      }
-      job.onStep?.('equipment_open', '目标仪器日历已加载');
-      // A prior failed or paused form must not be reused for another slot.
-      const cancel = page.locator('.dialog_block:visible input[name="cancel"]');
-      if (await cancel.count()) await cancel.click();
-      const result = await preflightBooking(page, { date: job.date, start: job.start, end: job.end }, { ...this.identityOptions(job), allowBeforeRelease: true, rules: rulesFor(job.equipment), onStep: job.onStep });
-      if (result.alreadyExists) await this.releaseSession(job.accountId, job.id);
-      else { const session = (this.sessions.get(job.id) || this.sessions.get(job.accountId)); session.preflight = result; await warmSlot(page, job.date, job.start); job.onStep?.('slot_warmed', '目标时间已提前预选，双击事件已准备；尚未打开表单或保存'); }
-      return result;
-    } catch (error) { await this.capture(job, 'prepare', error, page); await this.releaseSession(job.accountId, job.id); throw error; }
+    const budget={remaining:1};let session;
+    try{
+      session=await this.scheduledSessions.acquire(job,budget);
+      for(;;){try{
+        await this.locate(job,session);
+        const result=await this.bookingApi.preflightBooking(session.page,{date:job.date,start:job.start,end:job.end},{...this.identityOptions(job),allowBeforeRelease:true,rules:rulesFor(job.equipment),onStep:job.onStep});
+        if(result.alreadyExists)await this.releaseSession(job.accountId,job.id,true);
+        else{session.preflight=result;await this.warm(session.page,job.date,job.start);job.onStep?.('slot_warmed','目标时间已提前预选，双击事件已准备；尚未打开表单或保存');}
+        return result;
+      }catch(error){if((error.code!=='AUTH_EXPIRED'&&!this.scheduledSessions.isExpired(session))||error.code==='LOGIN_IDENTITY_MISMATCH'||budget.remaining<=0)throw error;session=await this.scheduledSessions.reconnect(job,session,budget);}}
+    }catch(error){await this.capture(job,'prepare',error,session?.page);await this.releaseSession(job.accountId,job.id);throw error;}
   }
   async commit(job, beforeSave) {
-    const session = (this.sessions.get(job.id) || this.sessions.get(job.accountId));
-    if (!session || session.page.isClosed()) throw new Error('账号浏览器会话已关闭，未保存');
+    let session = (this.sessions.get(job.id) || this.sessions.get(job.accountId));
+    if (!session) throw new Error('账号浏览器会话已关闭，未保存');
+    const budget={remaining:1};let savePhase=false,healthy=false;
     try {
       const request = { date: job.date, start: job.start, end: job.end };
+      for(;;){try{
+      if(session.poolLease){
+        await this.scheduledSessions.validate(job,session);
+        const fresh=await this.bookingApi.preflightBooking(session.page,request,{...this.identityOptions(job),rules:rulesFor(job.equipment),onStep:job.onStep});session.preflight=fresh;
+        job.onStep?.('scheduled_live_checked','开放后重新读取本时段预约，确认未预约且空闲才继续');
+        if(fresh.alreadyExists){healthy=true;return{status:'already_exists',reservationId:fresh.reservationId};}
+      }else if(session.page.isClosed())throw new Error('账号浏览器会话已关闭，未保存');
       let prepared;
       for (;;) {
         if (this.store.data.config.enabled === false) throw new Error('调度已暂停，保存未执行');
@@ -86,28 +95,29 @@ class BrowserWorker {
         catch (error) {
           if (error.code !== 'WEBSITE_REJECTED') throw error;
           const config = job.runtime?.config || this.store.data.config;
-          if (/最早提前|尚未开放|未到.*开放/.test(error.message) && Date.now() >= job.releaseAt) {
+          if (/最早提前|尚未开放|未到.*开放/.test(error.message) && this.clock() >= job.releaseAt) {
             const count = this.store.data.jobs?.[job.id]?.retryCount || 0, limit = config.retryPolicy?.taskRetries ?? 2;
             const delay = Math.min(1000, (count + 1) * 500), deadline = job.releaseAt + config.graceSeconds * 1000;
-            if (count >= limit || Date.now() + delay >= deadline) { error.retryable = false; throw error; }
+            if (count >= limit || this.clock() + delay >= deadline) { error.retryable = false; throw error; }
             this.store.job(job, { retryCount: count + 1, retryLimit: limit, message: `等待服务器开放（额外重试${count + 1}/${limit}）；尚未保存` });
             job.onStep?.('server_release_wait', '服务器暂未开放，按配置短暂等待；与任务重试共用次数');
             await session.page.waitForTimeout(delay); continue;
           }
           // Reconcile a booking that appeared while waiting, without another save.
           const assessment = await this.bookingApi.preflightBooking(session.page, request, { ...this.identityOptions(job), rules: rulesFor(job.equipment), onStep: job.onStep });
-          if (assessment.alreadyExists) return { status: 'already_exists', reservationId: assessment.reservationId };
+          if (assessment.alreadyExists) {healthy=true;return { status: 'already_exists', reservationId: assessment.reservationId };}
           throw error;
         }
       }
-      if (prepared.alreadyExists) return { status: 'already_exists', reservationId: prepared.reservationId };
-      return await this.bookingApi.commitBooking(session.page, request, { ...this.identityOptions(job), beforeSave, expectedUserId: session.preflight?.userId, rules: rulesFor(job.equipment), onStep: job.onStep });
+      if (prepared.alreadyExists) {healthy=true;return { status: 'already_exists', reservationId: prepared.reservationId };}
+      const result=await this.bookingApi.commitBooking(session.page, request, { ...this.identityOptions(job), beforeSave:async()=>{savePhase=true;await beforeSave?.();}, expectedUserId: session.preflight?.userId, rules: rulesFor(job.equipment), onStep: job.onStep });if(!['created','already_exists'].includes(result?.status))throw new Error('网站未返回可确认的预约结果');healthy=true;return result;
+      }catch(error){if(!session.poolLease||savePhase||(error.code!=='AUTH_EXPIRED'&&!this.scheduledSessions.isExpired(session))||error.code==='LOGIN_IDENTITY_MISMATCH'||budget.remaining<=0)throw error;session=await this.scheduledSessions.reconnect(job,session,budget);await this.locate(job,session);}}
     } catch (error) { await this.capture(job, 'commit', error, session.page); throw error; }
-    finally { await this.releaseSession(job.accountId, job.id); }
+    finally { await this.releaseSession(job.accountId, job.id,healthy); }
   }
   identityOptions(job) {
     const identity=require('./site-identity.cjs');
-    return {onCalendar:snapshot=>this.onCalendar?.(job,snapshot),onIdentity:userId=>identity.recordIdentity(this.store,job.accountId,userId,job.runtime?.account),profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length};
+    return {onCalendar:snapshot=>this.onCalendar?.(job,snapshot),onIdentity:userId=>{const session=this.sessions.get(job.id)||this.sessions.get(job.accountId);if(session?.userId&&String(userId)!==session.userId)throw Object.assign(new Error('登录身份已变化，未保存'),{code:'LOGIN_IDENTITY_MISMATCH',retryable:false});return identity.recordIdentity(this.store,job.accountId,userId,job.runtime?.account);},profileIds:()=>identity.knownIdentities(this.store).map(a=>a.profileId),teamMembers:()=>this.store.data.config.teamMembers||[],identitiesComplete:()=>identity.knownIdentities(this.store).length===this.store.data.accounts.length};
   }
   async searchEquipment(name) {
     const account = this.store.accounts().find(a => a.enabled && a.hasPassword);
@@ -161,15 +171,19 @@ class BrowserWorker {
     } catch (error) { await this.capture(check, 'selfcheck', error, session?.page); throw error; }
     finally { if (session) { await session.context.close().catch(() => {}); this.contexts.delete(session.context); } await this.closeIdle(); }
   }
-  async releaseSession(accountId, jobId) {
+  async releaseSession(accountId, jobId, healthy = false) {
     const sessionKey = this.sessions.has(jobId) ? jobId : accountId;
     const session = this.sessions.get(sessionKey);
     this.sessions.delete(sessionKey);
-    if (session) { await session.context.close().catch(() => {}); this.contexts.delete(session.context); }
+    if(session?.poolLease)await this.scheduledSessions.release(jobId,session,healthy);
+    else if (session) { await session.context.close().catch(() => {}); this.contexts.delete(session.context); }
     await this.closeIdle();
   }
+  async closeContext(context){try{await context.close();}catch{}this.contexts.delete(context);await this.closeIdle();}
+  async clearIdleSessions(){await this.scheduledSessions.prune(true);await this.closeIdle();}
+  sessionState(){return this.scheduledSessions.state();}
   async closeIdle() {
-    if (!this.contexts.size && this.browser && !this.closing) {
+    if (!this.contexts.size && !this.openingContexts && this.browser && !this.closing) {
       const browser = this.browser; this.browser = null;
       this.closing = browser.close().catch(() => {}).finally(() => { this.closing = null; });
       await this.closing;
@@ -177,11 +191,13 @@ class BrowserWorker {
   }
   async close() {
     this.closed = true;
+    clearInterval(this.sessionTimer);await this.scheduledSessions.close();
     await this.launching?.catch(() => {});
     this.sessions.clear();
     this.contexts.clear();
     if (this.browser) await this.browser.close().catch(() => {});
     this.browser = null;
+    await this.closing?.catch(()=>{});
   }
 }
 module.exports = { BrowserWorker };
